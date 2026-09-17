@@ -335,6 +335,7 @@ set(VOTVCOOP_SOURCES
     src/coop/interactables/deck_play_sync.cpp
     src/coop/interactables/physmods_sync.cpp
     src/coop/interactables/drive_sync.cpp
+    src/coop/interactables/drone_call_intent.cpp
     src/coop/interactables/drive_rack_sync.cpp
     src/coop/interactables/desk_snd_fx.cpp
     src/coop/interactables/desk_sim_sync.cpp
