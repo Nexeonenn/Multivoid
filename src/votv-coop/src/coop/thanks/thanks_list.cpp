@@ -106,8 +106,8 @@ bool ParseRevision(const std::string& val, int& out) {
     return true;
 }
 
-// `[Title] #RRGGBB left|right`. Anything else after the bracket makes the line a name, so a
-// player whose name opens with a bracketed clan tag is not read as a section.
+// `[Title] #RRGGBB apart`, both optional. Anything else after the bracket makes the line a name,
+// so a player whose name opens with a bracketed clan tag is not read as a section.
 bool ParseSectionHeader(const std::string& line, Section& out) {
     if (line.empty() || line[0] != '[') return false;
     const size_t close = line.find(']');
@@ -122,8 +122,7 @@ bool ParseSectionHeader(const std::string& line, Section& out) {
         while (j < line.size() && line[j] != ' ' && line[j] != '\t') ++j;
         if (j == i) break;
         const std::string tok = line.substr(i, j - i);
-        if (tok == "left") s.rightColumn = false;
-        else if (tok == "right") s.rightColumn = true;
+        if (tok == "apart") s.apart = true;
         else if (!ParseHexColour(tok, s.rgb)) return false;
         i = j;
     }

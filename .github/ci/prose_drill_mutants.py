@@ -108,7 +108,7 @@ MUTANTS = [
     # An ignore file's RULES are data. Dropping the carve-out makes --lines name `research/` and
     # `.claude/` as debt, and a sweep obeying it would un-ignore the private trees.
     ("other: ignore rules count as prose",
-     '        if p.endswith(OTHER_COMMENTS_ONLY):\n', '        if False:\n'),
+     '        if comment_prefix(p):\n', '        if False:\n'),
     # explain()'s third branch: blind it and --lines goes quiet for every non-md non-src file.
     ("--lines: names nothing outside md and src",
      '    prefix, fenced = ("md." if path.endswith(".md") else "other."), False\n',
@@ -198,7 +198,7 @@ MUTANTS = [
     ("other: a path in code reads as a citation",
      "    return line[i:] if i >= 0 else None", "    return line"),
     ("other: an ignore file's comments count as citations",
-     "    if path.endswith(OTHER_COMMENTS_ONLY):\n        return None",
+     "    if comment_prefix(path):\n        return None",
      "    if False:\n        return None"),
     ("other: dead documents unread",
      "            prose = other_prose(p, line)",

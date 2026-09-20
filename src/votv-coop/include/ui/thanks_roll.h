@@ -1,7 +1,7 @@
 // ui/thanks_roll.h -- the thanks roll: the main menu's list of people the mod thanks, built as
 // native UMG under the game's version lines and rolled like the game's own supporter list on the
-// other side of the screen (a vertical credit roll, two columns, the content printed twice so the
-// loop has no seam). The names come from coop/thanks/thanks_list.h; nothing here knows who they
+// other side of the screen (a vertical credit roll, the content printed twice so the loop has no
+// seam). A two-line sentence names each role in its colour, and the names below wear them. The names come from coop/thanks/thanks_list.h; nothing here knows who they
 // are. A child of the menu, so it shows, hides and dies with it and costs nothing in a world.
 //
 // A column that fits its window stands still. A column that does not is moved by a render

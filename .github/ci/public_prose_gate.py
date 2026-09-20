@@ -35,8 +35,8 @@ from public_prose_markers import (
     DECL, DECL_SKIP, HEX_LITERAL, INCLUDE, LINE_MARKERS, LONG_COMMENT_BLOCK, OFFSET_OWNERS,
     SRC_EXTRA)
 from public_prose_scope import (
-    BASELINE, DOC_ROOT, HALF_COMMENT_MIN_LINES, INFORMATIONAL, MD_HARD_CAP, OTHER_COMMENTS_ONLY,
-    OTHER_HARD_CAP, OTHER_MARKER_OWNERS, REPO, SRC_EXT, SRC_ROOTS, code_only, doc_name_fault, git,
+    BASELINE, DOC_ROOT, HALF_COMMENT_MIN_LINES, INFORMATIONAL, MD_HARD_CAP, OTHER_HARD_CAP,
+    OTHER_MARKER_OWNERS, REPO, SRC_EXT, SRC_ROOTS, code_only, comment_prefix, doc_name_fault, git,
     measured, measured_md, measured_other, measured_src, names_path, other_file, read, tracked)
 
 
@@ -129,8 +129,8 @@ def measure(repo):
             continue
         who["other.files"][p] = len(text.splitlines())
         lines = text.splitlines()
-        if p.endswith(OTHER_COMMENTS_ONLY):
-            lines = [l for l in lines if l.lstrip().startswith("#")]
+        if comment_prefix(p):
+            lines = [l for l in lines if l.lstrip().startswith(comment_prefix(p))]
         for line in lines:
             for k, (rx, _) in LINE_MARKERS.items():
                 if rx.search(line):
@@ -315,7 +315,7 @@ def explain(repo, path, tracked_set, subs=()):
             out.append((no, "src.string_marker", '"' + body + '"'))
         return sorted(out)
     prefix, fenced = ("md." if path.endswith(".md") else "other."), False
-    comments_only = path.endswith(OTHER_COMMENTS_ONLY)
+    comments_only = comment_prefix(path)
     base = os.path.dirname(path)
     for no, line in enumerate(text.splitlines(), 1):
         if prefix == "md.":
@@ -324,7 +324,7 @@ def explain(repo, path, tracked_set, subs=()):
                 continue
             if fenced:
                 continue
-        elif comments_only and not line.lstrip().startswith("#"):
+        elif comments_only and not line.lstrip().startswith(comments_only):
             continue
         for k, (rx, _) in LINE_MARKERS.items():
             if rx.search(line):

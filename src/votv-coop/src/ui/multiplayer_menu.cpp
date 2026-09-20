@@ -75,8 +75,9 @@ std::atomic<uint64_t> g_pauseTickMs{0};
 // with the menu. Driven from the session manager's latest-version line.
 ue_wrap::CachedObjRef g_versionText;    // our injected UTextBlock
 void* g_versionMenu = nullptr;          // the menu instance we injected it into
-// The label's normal colour, cyan, the coop accent; amber while an update is available.
-constexpr ue_wrap::FLinearColor kVersionCyan{0.f, 1.f, 1.f, 1.f};
+// The label's normal colour, white as the game's own build labels beside it; amber while an update
+// is available.
+constexpr ue_wrap::FLinearColor kVersionWhite{1.f, 1.f, 1.f, 1.f};
 std::string g_versionLastLine;          // last string pushed to the block (edge-apply SetText)
 bool g_versionLastOutdated = false;     // last colour state pushed (edge-apply SetColor)
 uint64_t g_lastMainTickMs = 0;          // the main-menu tick timestamp
@@ -140,12 +141,12 @@ void UpdateVersionLabel(void* menu) {
             g_versionMenu = menu;
             g_versionLastLine = initial;
             g_versionLastOutdated = outdated;
-            // The block inherits the game label's colour from the style clone, so the coop accent
-            // is applied (amber if we already know we are behind), and it must be the
+            // The block inherits the game label's colour from the style clone, so its own is
+            // applied (amber if we already know we are behind), and it must be the
             // colour-and-opacity dispatch: the block is already attached to Slate here, and a raw
             // property write would never repaint.
             const ue_wrap::FLinearColor amber{1.f, 0.78f, 0.35f, 1.f};
-            E::SetTextBlockColorDispatch(vt, outdated ? amber : kVersionCyan);
+            E::SetTextBlockColorDispatch(vt, outdated ? amber : kVersionWhite);
             UE_LOGI("multiplayer_menu: native version label injected (text=%p) ABOVE txt_version=%p",
                     vt, txtVersion);
         }
@@ -162,7 +163,7 @@ void UpdateVersionLabel(void* menu) {
     }
     if (outdated != g_versionLastOutdated) {
         const ue_wrap::FLinearColor amber{1.f, 0.78f, 0.35f, 1.f};
-        E::SetTextBlockColorDispatch(g_versionText.Raw(), outdated ? amber : kVersionCyan);
+        E::SetTextBlockColorDispatch(g_versionText.Raw(), outdated ? amber : kVersionWhite);
         g_versionLastOutdated = outdated;
     }
 }

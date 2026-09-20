@@ -20,7 +20,7 @@ from public_prose_markers import (
     MODULE_ROOT, RAW_OFFSET, REGISTRY_ROW, RENDERED, SRC_EXTRA, SRC_LINE_CITE, STRING_MARKERS,
     TYPE_DEF, WORD)
 from public_prose_scope import (
-    OTHER_COMMENTS_ONLY, SRC_EXT, code_only, git, measured_src, read, tracked)
+    SRC_EXT, code_only, comment_prefix, git, measured_src, read, tracked)
 
 
 class DocIndex:
@@ -183,7 +183,7 @@ def other_prose(path, line):
     `abi_gate` failure message naming a document that is not in the tree -- and they were found by
     reading, not by counting. Telling a printed message from a path a script opens needs more than
     a pattern, so this counter does not try."""
-    if path.endswith(OTHER_COMMENTS_ONLY):
+    if comment_prefix(path):
         return None
     lead = next((v for k, v in OTHER_COMMENT_LEAD.items() if path.endswith(k)), None)
     if lead is None:

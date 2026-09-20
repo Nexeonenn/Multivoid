@@ -9,43 +9,45 @@
 ; Nobody expires: a name stays for as long as its line does. To take a name out, delete the
 ; line, raise the revision and publish the file to the master.
 ;
-; Format: `key = value` lines first, then sections. A section opens with `[Title]`, followed
-; by an optional `#RRGGBB` colour and an optional `left` or `right` column. Every other line
-; is one name, shown as written. A line starting with `;` is a comment.
+; Format: `key = value` lines first, then sections. A section opens with `[title] #RRGGBB`
+; and, optionally, the word `apart`, which gives its names a column of their own:
+; the title is a word of the menu's sentence ("<title line> testers, bug reporters and ...:"),
+; drawn in the section's colour, and every name under it is drawn in that colour too. The
+; sentence is the legend, so write titles the way they read in it. Every other line is one
+; name, shown as written. A line starting with `;` is a comment.
 
 revision = 1
-title = Multivoid would like to thank:
+title = Multivoid would like to thank
 
-[Community] #9EEAB3 left
-AEDONIA
+[testers] #9EEAB3
 Aiker228
 Amari
-arigalit
 Bard (Breadman)
 Bear Bear
-BitorBit
-chocelite
-Clark The 1st
-decodinatorX
-dimas9999555522227777
 doctaaaaa
 Eggy
-elijah
-Extra5
-FockuManTV
 gediao
 Goldii
-hediiiqq
-huoyan1231
-Kawaii neko Frans
-MarchMotts
-Marlore
-Matus
 McJordan447
 Mkola
 Nicoszoki
 Rains
 Raxy0
+Violet
+
+[bug reporters] #7FD4FF
+AEDONIA
+BitorBit
+chocelite
+Clark The 1st
+decodinatorX
+dimas9999555522227777
+elijah
+Extra5
+FockuManTV
+Kawaii neko Frans
+MarchMotts
+Matus
 RealBocik
 SeaTurtleMan
 Shina
@@ -57,12 +59,21 @@ Sprocket
 Tentoni.
 thewittyrobin
 Uncle Death
-Violet
 ZachThePillow
 Zelkova
 zvanie Z
+гнида хачинская
+Хуй с горы
 
-[Boosty] #FF827C right
+[contributors] #C9A0FF
+archhn0madd
+arigalit
+hediiiqq
+huoyan1231
+Marlore
+Tarangok
+
+[Boosty supporters] #FF827C apart
 Alexander Vazquez
 Mikietot
 Pixqwe

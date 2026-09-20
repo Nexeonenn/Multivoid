@@ -22,9 +22,9 @@
 namespace coop::thanks_list {
 
 struct Section {
-    std::string title;               // UTF-8, as written in the header line
-    uint32_t    rgb = 0xFFFFFF;      // sRGB 0xRRGGBB
-    bool        rightColumn = false;
+    std::string title;               // UTF-8, as written; a word of the menu's sentence ("testers")
+    uint32_t    rgb = 0xFFFFFF;      // sRGB 0xRRGGBB: the colour of that word and of every name below
+    bool        apart = false;       // `apart`: its names stand in a column of their own
     std::vector<std::string> names;  // UTF-8, one per line of the file
 };
 

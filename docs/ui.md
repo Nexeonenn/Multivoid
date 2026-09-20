@@ -48,14 +48,17 @@ Which slots are worlds and which are the game's sub-saves is decided by the game
 classifier, never by matching slot names.
 
 The top row of the game's own build labels gets one more native label: the mod's game target and
-build, cyan, amber when the master reports a newer release, and silent while the master has no
-released record. The MULTIPLAYER button itself is white, as the menu's own items are.
+build, white as the game's own labels, amber when the master reports a newer release, and silent
+while the master has no released record. The MULTIPLAYER button itself is white, as the menu's own items are.
 
-Under those labels the menu rolls the thanks list (`ui/thanks_roll`): the people the mod thanks,
-in sections, each in its own colour, every name behind a dash as the game lists its own
-supporters, on a dark backing as wide as the columns, the title in the amber of the game's own
-"Patrons Tier III" header across the screen. It is the game's idiom, a vertical credit roll
-printed twice so the loop has no seam, with two differences. A column that fits its window stands still; and the roll
+Under those labels the menu rolls the thanks list (`ui/thanks_roll`): the people the mod thanks.
+Its two-line sentence is its legend: the title in the amber of the game's own "Patrons Tier III"
+header across the screen, and under it each role in that role's colour ("testers, bug reporters,
+contributors and Boosty supporters:"). Below, on a dark backing as wide as the columns, are the
+names and nothing else, each in its role's colour and behind a dash as the game lists its own
+supporters. The columns are not the roles: the common names are dealt by count into two columns
+of equal length that roll as one, and a role marked `apart` keeps a column to itself. It is the
+game's idiom, a vertical credit roll printed twice so the loop has no seam, with two differences. A column that fits its window stands still; and the roll
 moves by a render translation, only when the offset has changed by a whole unit, where the game
 moves a canvas slot every frame. `[V]` on the title screen that is about 28 engine calls a
 second beside the 120 the menu tick already made, at an unchanged 120 fps; in a world it is
