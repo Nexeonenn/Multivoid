@@ -501,4 +501,16 @@ bool WidgetDesiredSize(void* widget, FVector2D& out) {
     return true;
 }
 
+bool SetRenderTranslation(void* widget, const FVector2D& translation) {
+    if (!widget) return false;
+    static void* const sFn = [] {
+        void* w = R::FindClass(P::name::WidgetClass);
+        return w ? R::FindFunction(w, L"SetRenderTranslation") : nullptr;
+    }();
+    if (!sFn) return false;
+    ParamFrame f(sFn);
+    f.Set<FVector2D>(L"Translation", translation);
+    return Call(widget, f);
+}
+
 }  // namespace ue_wrap::umg

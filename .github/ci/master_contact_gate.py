@@ -21,7 +21,8 @@ WHAT IT HOLDS:
   2. `RefreshLatestVersion()` has exactly ONE caller, and it is the browser
      surface. This is the fix of b349de42 held in place: the update check used to
      fire at boot and on every main-menu entrance, so the master learned the
-     player's address before they had made any multiplayer decision at all.
+     player's address before they had made any multiplayer decision at all. The
+     thanks list's `RefreshFromMaster()` is held to the same single caller.
 
   3. Raw socket connects live only in the signaling client, and the STUN/TURN
      config writes only in ice_config. Either spreading is a new class of contact
@@ -47,11 +48,24 @@ ALLOWED_HTTP = {
     # `<computed>` is the /v1/lobbies fetch: the path is assembled with query
     # parameters, so it reaches http::Get as a variable rather than a literal.
     # Declared explicitly so an unreadable endpoint still has to be admitted.
-    "coop/net/lobby_client.cpp": {"<computed>", "/v1/latest", "/v1/join"},
+    # `/v1/thanks` is the thanks list the main menu rolls. It rides the browser's open beside
+    # `/v1/latest`, and the build carries a fallback copy, so the title screen never asks for it.
+    "coop/net/lobby_client.cpp": {"<computed>", "/v1/latest", "/v1/join", "/v1/thanks"},
 }
 
-# --- class 2: the one lane that must stay player-triggered -------------------
+# --- class 2: the lanes that must stay player-triggered ----------------------
+# Both fire when the player opens the server browser and nowhere else: opening it is a request
+# to talk to the master, entering the title screen is not. name -> (call pattern, the file that
+# defines it, the one file that may call it).
 REFRESH_CALLER = "ui/server_browser_surface.cpp"
+PLAYER_TRIGGERED = {
+    "RefreshLatestVersion": (
+        re.compile(r"\bRefreshLatestVersion\s*\(\s*\)"),
+        "coop/session/session_manager.cpp", REFRESH_CALLER),
+    "thanks_list::RefreshFromMaster": (
+        re.compile(r"\bthanks_list::RefreshFromMaster\s*\(\s*\)"),
+        "coop/thanks/thanks_list.cpp", REFRESH_CALLER),
+}
 
 # --- classes 3 and 4: the raw socket and the ICE credentials -----------------
 ALLOWED_RAW_CONNECT = {"coop/net/signaling_client.cpp"}
@@ -94,7 +108,6 @@ def code_only(text):
     return "\n".join(re.sub(r'"(?:[^"\\]|\\.)*"', '""', line)
                      for line in no_comments(text).splitlines())
 ICE_WRITE = re.compile(r"k_ESteamNetworkingConfig_P2P_(?:STUN|TURN)_\w+")
-REFRESH = re.compile(r"\bRefreshLatestVersion\s*\(\s*\)")
 
 
 def sources():
@@ -105,7 +118,7 @@ def sources():
 def main() -> int:
     fails = []
     seen_http = {}
-    refresh_callers = set()
+    lane_callers = {name: set() for name in PLAYER_TRIGGERED}
 
     for rel, text in sources():
         strings = no_comments(text)   # endpoints LIVE in the literals
@@ -116,8 +129,9 @@ def main() -> int:
         computed = len(HTTP_CALL_ANY.findall(strings)) - len(literal)
         if computed > 0:
             seen_http.setdefault(rel, set()).add("<computed>")
-        if REFRESH.search(code):
-            refresh_callers.add(rel)
+        for name, (pattern, _definer, _caller) in PLAYER_TRIGGERED.items():
+            if pattern.search(code):
+                lane_callers[name].add(rel)
         if RAW_CONNECT.search(code) and rel not in ALLOWED_RAW_CONNECT:
             fails.append(f"{rel}: opens a raw socket connection. Only "
                          f"{sorted(ALLOWED_RAW_CONNECT)} may -- a new one is a new class "
@@ -138,14 +152,14 @@ def main() -> int:
     for rel in sorted(set(ALLOWED_HTTP) - set(seen_http)):
         fails.append(f"{rel}: listed as a master caller but calls nothing -- stale entry.")
 
-    # The declaration and the definition both match the regex; neither is a call.
-    callers = {r for r in refresh_callers
-               if r not in ("coop/session/session_manager.cpp",)}
-    if callers != {REFRESH_CALLER}:
-        fails.append(f"RefreshLatestVersion callers are {sorted(callers) or '[]'}; the update "
-                     f"check must be triggered from {REFRESH_CALLER} and nowhere else "
-                     f"(b349de42: it used to fire at boot and on every menu entrance, so the "
-                     f"master learned the player's address before they asked it anything).")
+    # The definition matches its own pattern and is not a call.
+    for name, (_pattern, definer, caller) in PLAYER_TRIGGERED.items():
+        callers = lane_callers[name] - {definer}
+        if callers != {caller}:
+            fails.append(f"{name} callers are {sorted(callers) or '[]'}; it must be triggered "
+                         f"from {caller} and nowhere else (b349de42: the update check used to "
+                         f"fire at boot and on every menu entrance, so the master learned the "
+                         f"player's address before they asked it anything).")
 
     for f in fails:
         print(f"master_contact_gate: FAIL: {f}")

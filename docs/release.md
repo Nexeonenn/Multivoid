@@ -68,6 +68,9 @@ builds.
    cohort, since the client has no dev-or-stable axis and compares the build number alone. Then
    `.github/ci/verify_latest.ps1` must pass (`-AllowDev` when the master was pointed at a
    prerelease on purpose).
+   If `src/votv-coop/assets/thanks/thanks.txt` changed since the last release, copy it to the
+   master's `COOP_THANKS_FILE` too: the build embeds it, the master serves it, and the higher
+   `revision` wins in the game, so the two are kept equal.
 9. **The mod store.** Upload the same zip to the package listing; never delete a listed version,
    deprecate it.
 

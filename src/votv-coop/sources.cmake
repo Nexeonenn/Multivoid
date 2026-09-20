@@ -475,6 +475,9 @@ set(VOTVCOOP_SOURCES
     src/ui/atlas_watch.cpp
     src/ui/scale.cpp
     resources/fonts.rc
+    src/coop/thanks/thanks_list.cpp
+    src/ui/thanks_roll.cpp
+    resources/thanks.rc
     src/coop/player/roster.cpp
     src/coop/player/roster_ledger.cpp
     src/coop/moderation/ban_list.cpp

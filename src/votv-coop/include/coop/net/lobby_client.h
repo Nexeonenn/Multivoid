@@ -82,6 +82,11 @@ public:
     // Blocking GET of the latest record (the launch check). Call on a worker thread.
     static LatestInfo FetchLatest(const std::string& masterUrl, int timeoutMs);
 
+    // Blocking GET of the master's copy of the thanks list (coop/thanks/thanks_list.h), the file's
+    // text as served. False when the master is unreachable or serves none, which is silent: an
+    // older master answers 404. The text is untrusted; the list's parser bounds it. Worker thread.
+    static bool FetchThanks(const std::string& masterUrl, int timeoutMs, std::string& outText);
+
     // Render or game thread: copy the latest fetched rows into `out`. Returns the fetch
     // generation (increments on each completed refresh) so the caller can tell new data from a
     // re-read.

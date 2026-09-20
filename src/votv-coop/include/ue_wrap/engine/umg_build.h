@@ -154,4 +154,10 @@ bool SetSlotHAlignLive(void* slot, uint8_t h);
 // the bool and the reference.
 bool WidgetDesiredSize(void* widget, FVector2D& out);
 
+// UWidget::SetRenderTranslation: move what a widget paints without moving its layout. The way to
+// animate a position: a slot offset re-arranges the panel on every change, a render transform
+// only repaints, and Slate culls a transformed child by its painted rect, so a roll moved this way
+// under a clipping parent still draws the part that scrolled into view.
+bool SetRenderTranslation(void* widget, const FVector2D& translation);
+
 }  // namespace ue_wrap::umg

@@ -203,6 +203,20 @@ LatestInfo LobbyClient::FetchLatest(const std::string& masterUrl, int timeoutMs)
     return info;
 }
 
+bool LobbyClient::FetchThanks(const std::string& masterUrl, int timeoutMs, std::string& outText) {
+    const http::Response resp = http::Get(masterUrl, "/v1/thanks", timeoutMs);
+    if (!resp.ok || resp.status != 200) {
+        UE_LOGI("lobby: /v1/thanks -- no list from the master (ok=%d status=%d)",
+                resp.ok ? 1 : 0, resp.status);
+        return false;
+    }
+    J::Json j;
+    if (!J::ParseObject(resp.body, j)) { UE_LOGW("lobby: /v1/thanks -- malformed response"); return false; }
+    // The cap is the list parser's own file bound plus slack; a longer text is refused there.
+    outText = J::StrN(j, "text", 80 * 1024);
+    return !outText.empty();
+}
+
 JoinInfo LobbyClient::Join(const std::string& masterUrl, const std::string& lobbyId,
                            int timeoutMs) {
     JoinInfo info;

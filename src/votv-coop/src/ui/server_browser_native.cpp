@@ -16,6 +16,7 @@
 #include "ui/native_text_field.h"        // AnyFocused() -- a focused field owns Escape
 #include "coop/dev/native_text_probe.h"   // the HALT rung: can a native field take text?
 #include "ui/server_browser_selftest.h"  // the dev phase machine; ships dark
+#include "ui/server_browser_surface.h"   // the dev autoopen opens the way the button does
 #include "ue_wrap/core/game_thread.h"
 #include "ue_wrap/core/log.h"
 #include "ue_wrap/core/sdk_profile.h"
@@ -408,7 +409,9 @@ void OnMenuTick(void* menu, void* switcher) {
         }
     }
     if (g_autoOpenIn > 0 && --g_autoOpenIn == 0) {
-        Open();
+        // Through the surface, as the MULTIPLAYER button opens it: the requests that ride an open
+        // (the update check, the thanks list) are then part of the lab's run too.
+        ui::server_browser_surface::Open();
         selftest::Arm();
     }
     g_menu = menu;

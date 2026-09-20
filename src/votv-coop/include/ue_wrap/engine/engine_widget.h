@@ -48,7 +48,7 @@ bool RemoveWidgetFromViewport(void* userWidget);
 // ---- Runtime UMG button injection ----
 // Insert a UButton at the top of `refButton`'s UVerticalBox, cloning its FButtonStyle and slot
 // layout so spacing and indent match, with the label styled as the native items (font_ui at 16,
-// left-justified, cyan). `outButton` (may be null) gets the UButton* for the click poll. Game
+// left-justified, white). `outButton` (may be null) gets the UButton* for the click poll. Game
 // thread.
 bool InjectCanvasButton(void* refButton, const wchar_t* label, void** outButton);
 

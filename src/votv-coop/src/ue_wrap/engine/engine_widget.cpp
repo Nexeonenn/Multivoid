@@ -374,9 +374,9 @@ bool InjectCanvasButton(void* refButton, const wchar_t* label, void** outButton)
     // Label styling matches the native menu items deterministically rather than by cloning a
     // reference block, whose pointer is null at some inject timings (which fell through to a
     // default font, centred and white). The native labels are the menu font at size 16,
-    // left-justified, no outline, a (2,2) opaque black shadow, per the menu's reflection dump;
-    // that is set here, tinted cyan to mark the coop entry. The typeface name stays None, the
-    // font's single default face.
+    // left-justified, white, no outline, a (2,2) opaque black shadow, per the menu's reflection
+    // dump; that is set here, so the entry reads as one of the menu's own. The typeface name stays
+    // None, the font's single default face.
     {
         auto* d = reinterpret_cast<uint8_t*>(txt);
         auto* font = d + P::off::UTextBlock_Font;
@@ -388,9 +388,9 @@ bool InjectCanvasButton(void* refButton, const wchar_t* label, void** outButton)
         // No outline; the native labels have none.
         *reinterpret_cast<int32_t*>(font + P::off::FSlateFontInfo_OutlineSettings +
                                     P::off::FFontOutlineSettings_OutlineSize) = 0;
-        // Cyan, with the use rule set to specified.
+        // White, as the native items, with the use rule set to specified.
         *reinterpret_cast<FLinearColor*>(d + P::off::UTextBlock_ColorAndOpacity) =
-            FLinearColor{0.f, 1.f, 1.f, 1.f};
+            FLinearColor{1.f, 1.f, 1.f, 1.f};
         *(d + P::off::UTextBlock_ColorAndOpacity + P::off::FSlateColor_ColorUseRule) = 0;
         // Left-justified, matching the native items.
         *(d + P::off::UTextLayoutWidget_Justification) = 0;

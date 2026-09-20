@@ -1,0 +1,35 @@
+; The thanks list: the names the main menu rolls under the version lines.
+;
+; This file is the one source. The build embeds it as the fallback, and the master server
+; serves a copy of it at /v1/thanks, so a name added or removed there reaches every player
+; without a release. Of the embedded copy, the copy a player last downloaded and the copy the
+; master serves, the highest `revision` wins, and at equal revisions the master's does. Raise
+; the revision with every edit.
+;
+; Nobody expires: a name stays for as long as its line does. To take a name out, delete the
+; line, raise the revision and publish the file to the master.
+;
+; Format: `key = value` lines first, then sections. A section opens with `[Title]`, followed
+; by an optional `#RRGGBB` colour and an optional `left` or `right` column. Every other line
+; is one name, shown as written. A line starting with `;` is a comment.
+
+revision = 1
+title = Multivoid would like to thank:
+
+[Testers and bug reports] #9EEAB3 left
+Violet
+decodinatorX
+gediao
+doctaaaaa
+SirWilliam
+thewittyrobin
+huoyan1231
+arigalit
+hediiiqq
+Marlore
+
+[Boosty] #FF827C right
+Alexander Vazquez
+Mikietot
+Pixqwe
+doctaaaa
