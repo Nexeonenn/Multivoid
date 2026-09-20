@@ -29,7 +29,18 @@ class DocIndex:
 
     def __init__(self, repo, tracked, subs=()):
         self.names = set(tracked) | {t.rsplit("/", 1)[-1] for t in tracked}
-        self.repo, self.subs, self._vendored = repo, list(subs), None
+        # The reading room counts as vendored for citation purposes. Its trees used to BE
+        # submodules and arrived here through `subs`; since 2026-09-21 they are cloned locally and
+        # pinned by the tracked manifest `reference/README.md` instead. The property `vendored()`
+        # relies on is unchanged -- a citation into one resolves for a reader and cannot rot,
+        # because the commit is written down -- so they are read the same way, and their absence
+        # makes `vendored_known()` false exactly as an unchecked-out submodule does.
+        room = []
+        ref = os.path.join(repo, "reference")
+        if os.path.isdir(ref):
+            room = ["reference/" + d for d in sorted(os.listdir(ref))
+                    if os.path.isdir(os.path.join(ref, d))]
+        self.repo, self.subs, self._vendored = repo, list(subs) + room, None
         self._subs_readable = 0
         self.lengths = {}
         self.paths = set(tracked)
@@ -223,7 +234,15 @@ def src_comment_faults(line, docs, read_offsets, owns_offsets, path=""):
               list(LINE_MARKERS.items()) + list(SRC_EXTRA.items()) if rx.search(line)]
     if doc_faults(line, docs):
         faults.append("src.comment_dead_docpath")
-    if any(not docs.line_resolves(n, int(k)) for n, k in SRC_LINE_CITE.findall(line)):
+    # A line citing a FOREIGN tree is citing somewhere else, and `SRC_LINE_CITE` captures only the
+    # basename, so this pass cannot tell that file from a same-named one of ours. `foreign()` reads
+    # the full path the same line carries, which is the only place the distinction survives -- so a
+    # line naming a foreign tree is exempt from the row check as a whole, exactly as it already is
+    # from `dead_path` below. Without this, every `reference/...` citation in the tree faulted the
+    # day the reading room stopped being submodules, in files nobody had touched.
+    foreign_line = any(foreign(c) for c in CITED_PATH.findall(line))
+    if not foreign_line and any(not docs.line_resolves(n, int(k))
+                                for n, k in SRC_LINE_CITE.findall(line)):
         faults.append("src.comment_doc_row")
     if not owns_offsets and {int(h, 16) for h in RAW_OFFSET.findall(line)} - read_offsets:
         faults.append("src.comment_pinned_offset")

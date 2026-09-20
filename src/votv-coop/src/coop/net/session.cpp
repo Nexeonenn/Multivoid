@@ -34,10 +34,10 @@ namespace {
 constexpr int kSendStaging = kMaxPacketBytes;
 
 // The lanes and the relayable-kind list live in session_lanes.h; Lane::Count is pinned to the
-// kLaneCount ConfigureLanesForPeer passes, or a fourth lane would flow through LaneForKind while
+// kLaneCount TuneConnection passes, or a fourth lane would flow through LaneForKind while
 // the connection still configured three.
 static_assert(static_cast<int>(Lane::Count) == 3,
-              "Lane::Count changed -- update kLaneCount in session_status.cpp::ConfigureLanesForPeer");
+              "Lane::Count changed -- update kLaneCount in connection_tuning.cpp::TuneConnection");
 
 }  // namespace
 
@@ -281,6 +281,33 @@ void Session::SampleLinkRates(uint64_t nowMs) {
         in.gnsPingMs           = st.m_nPing;
         in.backlogBytes        = backlog_.DepthBytes(i);
         rateControl_.Sample(i, in, nowMs);
+        // What the law decided, handed to the transport. Per CONNECTION, not globally: the
+        // controller has to be able to converge BELOW the global 1 MiB/s floor, which is still in
+        // place until WP-A3 removes it, and a connection value outranks a global one. Writing both
+        // Min and Max to one number is the API's own way of saying "the application owns this
+        // rate"; GNS re-reads the config on every send and think, so it lands within a packet.
+        // The decision is PEEKED and only spent once both writes have gone in: a decision retired
+        // by a write that never happened would strand this link at a stale rate until the throttle
+        // next landed on a different rung.
+        if (const int64_t want = rateControl_.PendingRateWrite(i); want > 0) {
+            if (auto* utils = SteamNetworkingUtils()) {
+                // Min before Max. Each write takes the global lock separately, so a reader between
+                // them can see Min != Max and take the estimation branch instead of the fixed-rate
+                // one; this order makes that transient possible only while DECELERATING, since an
+                // accelerating write raises Max on its own clamp. No order removes it.
+                const auto w0 = std::chrono::steady_clock::now();
+                const bool ok =
+                    utils->SetConnectionConfigValueInt32(hConn,
+                        k_ESteamNetworkingConfig_SendRateMin, static_cast<int32>(want)) &&
+                    utils->SetConnectionConfigValueInt32(hConn,
+                        k_ESteamNetworkingConfig_SendRateMax, static_cast<int32>(want));
+                const auto wus = std::chrono::duration_cast<std::chrono::microseconds>(
+                                     std::chrono::steady_clock::now() - w0).count();
+                if (ok)
+                    rateControl_.NoteRateWritten(i, want,
+                                                 static_cast<uint64_t>(wus < 0 ? 0 : wus));
+            }
+        }
         // Through the direct attempt, never the backlog: a probe that waited behind our own queue
         // would time the queue. A refusal is the send buffer at the brim, which is the state a bulk
         // transfer creates, and the counted refusals are the measurement of that.

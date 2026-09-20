@@ -10,9 +10,10 @@ notices these licenses require.
 Scope notes (moved here from `LICENSE` 2026-08-30, so that file stays a bare
 MIT text):
 
-- Git submodules under `reference/` and `src/votv-coop/third_party/` are
-  separate projects distributed under their own licenses. Only the ones
-  actually compiled into or embedded in the shipped binary appear below.
+- The git submodules under `src/votv-coop/third_party/`, and the upstream trees
+  `reference/README.md` tells you how to clone, are separate projects distributed
+  under their own licenses. Only the ones actually compiled into or embedded in
+  the shipped binary -- or whose code was ported into it -- appear below.
 - `reference/mtasa-blue/` (GPLv3) is a read-only architectural reference:
   no code from it is copied, linked, or distributed, so it does not appear
   in this file's binary notices.

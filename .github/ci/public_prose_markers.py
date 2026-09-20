@@ -83,8 +83,15 @@ LOCAL_TREES = ("tools", "research", "memory", "site")
 # Trees this repository has never contained: the game's cooked content, UE's own source, the SDK
 # header dump, the install layout. A path into one of them is a citation of somewhere else, and
 # the tree cannot say whether it resolves either way.
+#
+# `reference/` joined them on 2026-09-21, when the reading room stopped being three submodule
+# pointers and became a tracked MANIFEST (`reference/README.md`: upstream, licence, and the commit
+# each tree's citations were read at). What the gate could check before was only that the tree's
+# gitlink existed -- never the file, never the line, and never in CI, which has always refused to
+# fetch `reference/*`. The manifest is a stronger guarantee for the reader that replaces it, and it
+# is checked by the pin being written down rather than by this pass.
 FOREIGN_TREE = ("Content/", "Runtime/", "CXXHeaderDump/", "Engine/", "Mods/", "Saved/",
-                "Binaries/", "Config/", "Plugins/")
+                "Binaries/", "Config/", "Plugins/", "reference/")
 LOG_CALL = re.compile(r"\bUE_LOG[IWE]\s*\(\s*((?:\"(?:[^\"\\]|\\.)*\"\s*)+)")
 LOG_LITERAL = re.compile(r'"((?:[^"\\]|\\.)*)"')
 LOG_SPEC = re.compile(r"%[-+ #0-9.*]*(?:ll|l|h|z|w)?[A-Za-z]")

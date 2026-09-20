@@ -346,7 +346,7 @@ public:
         return peerConns_[peerSlot].load() != 0;
     }
 
-    // True only after the Connected callback ran and ConfigureLanesForPeer succeeded.
+    // True only after the Connected callback ran and TuneConnection succeeded.
     // IsSlotConnected flips earlier (Connecting), when a send would still queue on lane 0; the
     // snapshot drain and the connect-edge replay gate on this one.
     bool IsSlotReady(int peerSlot) const {
@@ -581,7 +581,7 @@ public:
     }
 
 private:
-    // Set after ConfigureLanesForPeer in the Connected callback; cleared when the slot's handle is
+    // Set after TuneConnection in the Connected callback; cleared when the slot's handle is
     // zeroed (IsSlotReady).
     std::array<std::atomic<bool>, kMaxPeers> peerLanesConfigured_{};
 

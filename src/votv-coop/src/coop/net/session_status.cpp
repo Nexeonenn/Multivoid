@@ -7,8 +7,9 @@
 #include <cstdio>
 
 #include "coop/config/config.h"           // ResolveInt, the wire knobs
-#include "coop/config/config_registry.h"  // rows::net_sendbuf_kb / rows::net_sendrate_kbs
+#include "coop/config/config_registry.h"  // rows::net_sendbuf_kb, read for the admission size
 #include "coop/net/connect_history.h"     // the per-address connection cap at the accept edge
+#include "connection_tuning.h"            // co-located: TuneConnection, kDefaultSendBufBytes
 #include "coop/net/net_clock.h"           // NowMs, the net layer's one steady clock
 #include "coop/net/peer_admission.h"      // the exchange state a pending entry owns
 #include "coop/player/players_registry.h"
@@ -22,10 +23,6 @@
 #pragma warning(pop)
 
 namespace coop::net {
-
-// The per-connection send buffer configured when the net.sendbuf_kb knob is 0; one constant,
-// handed to SendAdmission::SetSendBufBytes so the headroom rule measures against the real size.
-constexpr int kDefaultSendBufBytes = 4 * 1024 * 1024;
 
 namespace {
 
@@ -66,48 +63,6 @@ EndReason JudgeDial(const DialReport& d) {
         break;
     }
     return EndReason::None;
-}
-
-// The lanes for a newly seated peer; on failure reliable sends collapse to lane 0 (functional, no
-// priority routing).
-void ConfigureLanesForPeer(HSteamNetConnection hConn) {
-    constexpr int kLaneCount = 3;  // matches Lane::Count in session.cpp
-    const int priorities[kLaneCount] = { 0, 1, 2 };
-    const uint16 weights[kLaneCount] = { 4, 2, 1 };
-    const EResult rc = SteamNetworkingSockets()->ConfigureConnectionLanes(
-        hConn, kLaneCount, priorities, weights);
-    if (rc != k_EResultOK) {
-        UE_LOGW("net: ConfigureConnectionLanes(h=0x%08x) rc=%d",
-                static_cast<unsigned>(hConn), static_cast<int>(rc));
-    }
-    // Per-connection wire knobs for the delivery drill and slow-link simulation; 0 leaves the
-    // defaults. SendRateMin and Max are set to the same value, as the GNS header instructs for a
-    // fixed rate; this build has no bandwidth estimation, so the effective rate is the ping-at-init
-    // estimate clamped to the global Min/Max set at init, and this pin overrides that in both
-    // directions.
-    auto* utils = SteamNetworkingUtils();
-    const long bufKb = coop::config::ResolveInt(coop::config_registry::rows::net_sendbuf_kb);
-    if (bufKb > 0) {
-        utils->SetConnectionConfigValueInt32(hConn, k_ESteamNetworkingConfig_SendBufferSize,
-                                             static_cast<int32>(bufKb) * 1024);
-        UE_LOGW("net: send buffer PINNED to %ld KB for h=0x%08x (drill knob net.sendbuf_kb)",
-                bufKb, static_cast<unsigned>(hConn));
-    } else {
-        // GNS's 512 KB default is smaller than a join burst (~740 KB of PropSpawns plus the connect
-        // replay), so the backlog engaged on every join; 4 MB makes it the exception, a real slow
-        // link. The backlog stays the correctness net either way.
-        utils->SetConnectionConfigValueInt32(hConn, k_ESteamNetworkingConfig_SendBufferSize,
-                                             kDefaultSendBufBytes);
-    }
-    const long rateKbs = coop::config::ResolveInt(coop::config_registry::rows::net_sendrate_kbs);
-    if (rateKbs > 0) {
-        utils->SetConnectionConfigValueInt32(hConn, k_ESteamNetworkingConfig_SendRateMin,
-                                             static_cast<int32>(rateKbs) * 1024);
-        utils->SetConnectionConfigValueInt32(hConn, k_ESteamNetworkingConfig_SendRateMax,
-                                             static_cast<int32>(rateKbs) * 1024);
-        UE_LOGW("net: send rate PINNED to %ld KB/s for h=0x%08x (drill knob net.sendrate_kbs)",
-                rateKbs, static_cast<unsigned>(hConn));
-    }
 }
 
 // The host's accept policy, shared by both accept sites (the Connecting edge, and the Connected
@@ -376,7 +331,7 @@ int Session::pendingPeerCount() const {
 // a host the seat is spent in AdmitPending, long after the Connected callback, and a copy left in
 // that callback once admitted a peer without ever sending AssignPeerSlot.
 void Session::FinishPeerConnected(int slot, uint32_t hConn) {
-    ConfigureLanesForPeer(hConn);
+    TuneConnection(hConn, rateControl_.Enabled());
     // Mirror the buffer size the connection runs with (the knob or the default); the headroom
     // rule every reliable send path obeys is measured against it.
     {

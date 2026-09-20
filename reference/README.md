@@ -12,10 +12,10 @@ bought that mattered was the PIN: a comment in our source that cites
 specific commit, and an unpinned clone would drift off it as upstream moves. The pins live in the
 table below instead, which is the same guarantee at none of the cost.
 
-**Reading these is a project rule, not a nicety.** `CLAUDE.md` requires the MTA equivalent of a
-problem to be grepped and READ before a coop feature is designed, and the RE-UE4SS equivalent
-before an engine-level one. This directory is what those rules point at, so a machine doing that
-work wants it populated.
+**Reading these is a project rule, not a nicety.** The contributing guide requires the MTA
+equivalent of a problem to be found and READ before a coop feature is designed, and the RE-UE4SS
+equivalent before an engine-level one. This directory is what those rules point at, so anyone
+doing that work wants it populated.
 
 ## Rebuilding the room
 
@@ -46,7 +46,9 @@ git -C reference/enet checkout 5a9c537fd464b3c6d3c55e1d3bd47588faf71b42
 | `voidmod-extracted/` | -- | -- | -- | An extracted VOTV mod, read for its shape. Not redistributable. |
 | `unreal-shimloader/` | https://github.com/Dei-Vias/unreal-shimloader | -- | -- | How other mod loaders enter an Unreal process. |
 | `psk-psa-v9.1.2/` | -- | -- | -- | Blender PSK/PSA addon, a model-format RE aid. |
-| `agency-agents/` | -- | -- | -- | Our own audit-agent prompts. Local by the maintainer's decision, like `docs/QUESTION_FORM_*`. |
+
+The directory also holds one tree that is ours rather than upstream, and it is not listed above
+because it is not a reading-room tree: our own review prompts, local by the maintainer's decision.
 
 A tree with no commit in the table carries no `file:line` citation in our source, so it needs no
 pin; clone whatever version you like. **When you add a citation to a tree, pin it here in the same
@@ -56,6 +58,6 @@ anything.
 ## Licences
 
 Every tree keeps its own. Where this project actually PORTS code -- RE-UE4SS and ENet, both MIT --
-the obligation is discharged by `THIRD-PARTY-NOTICES.md`, which reproduces each licence verbatim
+the obligation is discharged by `THIRD-PARTY-NOTICES.md`, which reproduces each licence in full
 and is tracked, public and independent of whether this directory was ever populated. MTA:SA is
 GPLv3 and is read for its shapes only; no MTA line is copied into this codebase.

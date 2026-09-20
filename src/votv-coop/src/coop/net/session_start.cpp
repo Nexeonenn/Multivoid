@@ -103,7 +103,20 @@ bool Session::Start(const Config& cfg) {
     }
     cfg_ = cfg;
     net_stats::ResetSession();  // a new session's traffic totals start at zero
-    rateControl_.Reset();       // and its per-link measurements
+    // The measured-rate controller, unless the drill has pinned a fixed rate -- that knob is an
+    // instrument, and an instrument that the controller overrides measures the controller.
+    {
+        const bool pinned =
+            coop::config::ResolveInt(coop::config_registry::rows::net_sendrate_kbs) > 0;
+        const bool want = coop::config::ResolveFlag(coop::config_registry::rows::net_ratecontrol);
+        rateControl_.Reset(want && !pinned);   // and its per-link measurements
+        if (want && pinned)
+            UE_LOGW("net: send-rate control OVERRIDDEN by net.sendrate_kbs -- the link is pinned, "
+                    "not measured");
+        else if (!want)
+            UE_LOGW("net: send-rate control OFF (net.ratecontrol=0) -- links run at the "
+                    "transport's connect-time estimate, which it never revisits");
+    }
     admission_.Reset();         // and every slot's send-buffer occupancy
 
     // This peer's per-process session epoch, minted non-zero (0 is the receiver's "not yet latched"

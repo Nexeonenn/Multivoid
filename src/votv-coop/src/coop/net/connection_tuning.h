@@ -1,0 +1,35 @@
+// coop/net/connection_tuning.h -- the transport parameters a seated connection runs under.
+//
+// One concept: everything the transport is TOLD about a connection once it is ours, as opposed to
+// what the connection then does (session_status.cpp owns the slot's life) or what we send over it.
+// Three parameters live here, and they are one concept because they are written at one moment, to
+// one connection, through one API, and each is meaningless without the others: the priority lanes
+// the reliable kinds ride, the send buffer those lanes share, and the rate the whole connection is
+// paced at.
+//
+// It was extracted from session_status.cpp when that file crossed the 800-line soft cap, and the
+// function it came from was called ConfigureLanesForPeer while also setting the buffer and the
+// rate -- a name that had stopped describing its own body.
+
+#pragma once
+
+#include <cstdint>
+
+namespace coop::net {
+
+// The per-connection send buffer used when the net.sendbuf_kb knob is 0. Public because the
+// headroom rule measures occupancy against the real size and must be handed the same number
+// (SendAdmission::SetSendBufBytes).
+inline constexpr int kDefaultSendBufBytes = 4 * 1024 * 1024;
+
+// Tune a newly seated connection: lanes, then the send buffer, then the opening send rate. Called
+// once per connection from the Connected edge, before any traffic that matters. A lane failure is
+// logged and survivable (reliable sends collapse to lane 0, functional but unprioritised).
+//
+// `rateControlled` is the session's own resolved answer, passed in rather than re-read here. The
+// ini is resolved live on every read, so a flag flipped after Session::Start would otherwise give
+// the one combination that is wrong in both directions: this function writing an opening rung that
+// the controller -- disabled at Start -- will never move again.
+void TuneConnection(uint32_t hConn, bool rateControlled);
+
+}  // namespace coop::net

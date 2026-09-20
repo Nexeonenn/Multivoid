@@ -9,7 +9,7 @@
 
 namespace coop::net {
 
-// The priority lanes. session_status's ConfigureLanesForPeer hard-codes the count to 3, and
+// The priority lanes. connection_tuning's TuneConnection hard-codes the count to 3, and
 // session.cpp pins the two together with a static_assert on Lane::Count.
 enum class Lane : int {
     High = 0,
