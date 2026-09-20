@@ -93,7 +93,8 @@ void Session::RelayReliableToOtherClients(int originSlot, ReliableKind kind,
         h->senderEpoch = ownEpoch_;
         h->senderSlot = static_cast<uint8_t>(originSlot);
         coop::net::WriteStateTimeMs24(*h, 0);  // the origin's state time is not the relayer's -- scrub (no client-side reader)
-        backlog_.SendOrQueue(i, laneIdx, hConn, wire, len);
+        if (backlog_.SendOrQueue(i, laneIdx, hConn, wire, len) == SendOutcome::Streamed)
+            rateControl_.NoteReliableQueued(i, len);
     }
 }
 

@@ -11,6 +11,7 @@
 #include "coop/net/net_stats.h"            // session traffic accounting (the one counter owner)
 #include "coop/net/protocol.h"
 #include "coop/net/send_backlog.h"         // the reliable-send delivery guarantee
+#include "coop/net/send_rate_control.h"    // what each peer's link measures out at
 #include "coop/player/players_registry.h"  // kMaxPeers (host + 3 clients = 4)
 
 #include <array>
@@ -230,7 +231,9 @@ public:
                             int len, uint8_t senderSlot = 0);
 
     // One direct GNS attempt, no backlog: false on send-buffer backpressure, which is the
-    // save-transfer pump's pacing signal (retry next tick). That pump is its only intended caller.
+    // save-transfer pump's pacing signal (retry next tick). Its two callers are that pump and the
+    // link probe, which must not be queued either -- a probe delayed behind our own backlog would
+    // time that queue instead of the link.
     bool TrySendReliableToSlot(int peerSlot, ReliableKind kind, const void* payload,
                                int len, uint8_t senderSlot = 0);
 
@@ -448,6 +451,9 @@ private:
                          std::chrono::steady_clock::time_point& nextClockSend,
                          std::chrono::steady_clock::time_point& nextDeskSimSend,
                          uint64_t& sendFails);
+    // One measurement pass over every live connection (net thread, 10 Hz): the send-rate sample and
+    // the round-trip probe each slot owes. See coop/net/send_rate_control.h.
+    void SampleLinkRates(uint64_t nowMs);
     void HandleConnStatusChanged(void* info);
     // Host: the lowest empty slot in [1..kMaxPeers-1], or -1 when full.
     int FindFreePeerSlotForClient();
@@ -754,6 +760,9 @@ private:
     // wherever peerConns_ is zeroed. sendBufBytes_ mirrors the configured per-connection
     // SendBufferSize; the drain's reserve gate is computed against it.
     SendBacklog backlog_;
+    // The link measurement: goodput per slot from our own queued-byte count against GNS's pending
+    // totals, and a round trip timed with the LinkProbe pair.
+    SendRateControl rateControl_;
     int sendBufBytes_ = 512 * 1024;
     // The fatal-backlog close: Kick(slot) on the host; on a client, claim plus the KickClaimed
     // teardown of the host connection. Net thread.

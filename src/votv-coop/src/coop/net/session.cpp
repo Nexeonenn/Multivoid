@@ -96,9 +96,12 @@ bool Session::SendReliableToSlot(int peerSlot, ReliableKind kind, const void* pa
     const int total = BuildReliableWire_(wire, kind, payload, len,
                                          sendSeq_.fetch_add(1), ownEpoch_, senderSlot);
     // Entered the stream or the backlog: true; a dying connection: false (teardown owns the
-    // cleanup). See send_backlog.h.
-    return backlog_.SendOrQueue(peerSlot, static_cast<int>(LaneForKind(kind)),
-                                hConn, wire, total);
+    // cleanup). See send_backlog.h. Only the bytes GNS took are the rate measurement's input --
+    // what the backlog holds is counted when a drain pass hands it over.
+    const SendOutcome rc = backlog_.SendOrQueue(peerSlot, static_cast<int>(LaneForKind(kind)),
+                                               hConn, wire, total);
+    if (rc == SendOutcome::Streamed) rateControl_.NoteReliableQueued(peerSlot, total);
+    return rc != SendOutcome::Dropped;
 }
 
 bool Session::TrySendReliableToSlot(int peerSlot, ReliableKind kind, const void* payload,
@@ -143,6 +146,7 @@ bool Session::TrySendReliableToSlot(int peerSlot, ReliableKind kind, const void*
         return false;
     }
     net_stats::AddSent(static_cast<uint32_t>(total));
+    rateControl_.NoteReliableQueued(peerSlot, total);
     return true;
 }
 
@@ -197,7 +201,9 @@ bool Session::SendReliable(ReliableKind kind, const void* payload, int len) {
         // The pre-world gate, per slot (SendReliableToSlot's rule).
         if (!IsSlotWorldReady(i) && !IsPreWorldSendableKind(kind)) continue;
         // Delivery per slot: the stream or the backlog counts as sent.
-        if (backlog_.SendOrQueue(i, laneIdx, hConn, wire, total)) anySuccess = true;
+        const SendOutcome rc = backlog_.SendOrQueue(i, laneIdx, hConn, wire, total);
+        if (rc == SendOutcome::Streamed) rateControl_.NoteReliableQueued(i, total);
+        if (rc != SendOutcome::Dropped) anySuccess = true;
     }
     return anySuccess;
 }
@@ -234,11 +240,46 @@ bool Session::SendEntityDestroy(uint32_t elementId) {
     return SendReliable(ReliableKind::EntityDestroy, &p, sizeof(p));
 }
 
+void Session::SampleLinkRates(uint64_t nowMs) {
+    auto* sockets = SteamNetworkingSockets();
+    if (!sockets) return;
+    const auto t0 = std::chrono::steady_clock::now();
+    int links = 0;
+    for (int i = 0; i < kMaxPeers; ++i) {
+        const uint32_t hConn = peerConns_[i].load();
+        if (hConn == 0) continue;
+        SteamNetConnectionRealTimeStatus_t st{};
+        if (sockets->GetConnectionRealTimeStatus(hConn, &st, 0, nullptr) != k_EResultOK) continue;
+        ++links;
+        SendRateControl::LinkSample in{};
+        in.pendingReliable     = st.m_cbPendingReliable;
+        in.sentUnackedReliable = st.m_cbSentUnackedReliable;
+        in.pendingUnreliable   = st.m_cbPendingUnreliable;
+        in.gnsRateBps          = st.m_nSendRateBytesPerSecond;
+        in.gnsPingMs           = st.m_nPing;
+        in.backlogBytes        = backlog_.DepthBytes(i);
+        rateControl_.Sample(i, in, nowMs);
+        // Through the direct attempt, never the backlog: a probe that waited behind our own queue
+        // would time the queue. A refusal is the send buffer at the brim, which is the state a bulk
+        // transfer creates, and the counted refusals are the measurement of that.
+        LinkProbePayload probe{};
+        if (rateControl_.NextProbe(i, nowMs, probe) &&
+            !TrySendReliableToSlot(i, ReliableKind::LinkProbe, &probe, sizeof(probe)))
+            rateControl_.NoteProbeRefused(i, probe.token);
+    }
+    const auto us = std::chrono::duration_cast<std::chrono::microseconds>(
+                        std::chrono::steady_clock::now() - t0).count();
+    rateControl_.NoteSampleCost(static_cast<uint64_t>(us < 0 ? 0 : us), links, nowMs);
+}
+
 void Session::NetThread() {
     const auto sendInterval = std::chrono::milliseconds(
         cfg_.sendHz > 0 ? 1000 / cfg_.sendHz : 33);
     auto nextSend = std::chrono::steady_clock::now();
     auto nextRttSample = std::chrono::steady_clock::now();
+    // The link measurement's own cadence, ten times the diagnostics sample's: a control input has
+    // to see a queue build, which a 1 Hz reading cannot.
+    auto nextLinkSample = std::chrono::steady_clock::now();
     // The host world clock streams on its own ~500 ms cadence, far slower than the pose sendHz (one
     // game minute of real time is well over 500 ms at any day length), keeping the client's frozen
     // mirror within a minute of the host. Net-thread-local.
@@ -381,9 +422,19 @@ void Session::NetThread() {
         for (int i = 0; i < kMaxPeers; ++i) {
             const uint32_t hConn = peerConns_[i].load();
             if (hConn == 0) continue;
-            backlog_.Drain(i, hConn, sendBufBytes_);
+            const int streamed = backlog_.Drain(i, hConn, sendBufBytes_);
+            if (streamed > 0) rateControl_.NoteReliableQueued(i, streamed);
             const char* fatalReason = nullptr;
             if (backlog_.CheckFatal(i, &fatalReason)) FatalCloseSlot(i, fatalReason);
+        }
+
+        // 3c) The link measurement at 10 Hz (send_rate_control): the goodput sample each slot's
+        // delivery is differentiated from, and the round-trip probe. An idle link costs one status
+        // read and sends nothing.
+        if (state_.load() == ConnState::Connected && now >= nextLinkSample) {
+            SampleLinkRates(NowMs());
+            nextLinkSample = now + std::chrono::milliseconds(
+                                       SendRateControl::kProbeIntervalMs);
         }
 
         // 4) Per-peer diagnostics every ~1 s from GetConnectionRealTimeStatus: queue time, pending

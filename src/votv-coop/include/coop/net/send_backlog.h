@@ -27,6 +27,15 @@
 
 namespace coop::net {
 
+// What became of one reliable send. The delivery guarantee only distinguishes "will arrive" from
+// "never will", but the send-rate measurement needs the third fact: whether these bytes are now
+// GNS's problem or still ours, since only the ones GNS took can come back as an acknowledgement.
+enum class SendOutcome : uint8_t {
+    Streamed,  // GNS accepted the whole packet; it is in the reliable stream
+    Queued,    // the send buffer refused it; it is in this backlog and will be re-attempted
+    Dropped,   // it never will be delivered: the connection is dying, or the arguments were invalid
+};
+
 class SendBacklog {
 public:
     static constexpr int kLaneCount = 3;  // pinned to Lane::Count (session.cpp static_assert)
@@ -47,21 +56,21 @@ public:
     // Attempt-or-queue one complete on-wire reliable packet (PacketHeader +
     // ReliableHeader + payload, prebuilt by the caller -- the relay's rewritten
     // packets share this shape). Holds the (slot,lane) section across the GNS
-    // attempt (see header comment). Returns:
-    //   true  -- the packet WILL be delivered (entered the stream or the backlog);
-    //   false -- it never will: the connection refused it fatally (dying/dead --
-    //            teardown owns cleanup) or the args were invalid. Callers treat
-    //            false exactly like today's dead-slot false.
+    // attempt (see header comment). Streamed and Queued both mean the packet WILL
+    // be delivered; Dropped means it never will, because the connection refused it
+    // fatally (dying/dead -- teardown owns cleanup) or the args were invalid, and
+    // callers treat it exactly like today's dead-slot false.
     // Any thread. `hConn` is the slot's CURRENT connection handle.
-    bool SendOrQueue(int slot, int lane, uint32_t hConn, const uint8_t* wire, int len);
+    SendOutcome SendOrQueue(int slot, int lane, uint32_t hConn, const uint8_t* wire, int len);
 
     // One drain pass for a slot (net-thread tick). Re-attempts queued heads in lane-priority
     // order (High -> Normal -> Bulk); the GNS rc is the headroom read, so a refusal ends the
     // pass. `reserveGate`: the pass stops refilling once the connection's pending bytes
     // (reliable plus unreliable, the exact sum GNS's own enqueue check uses) exceed
     // sendBufBytes - kReserve, so the UnreliableNoDelay pose and voice streams keep flowing
-    // through a drain episode instead of being starved for its whole length.
-    void Drain(int slot, uint32_t hConn, int sendBufBytes);
+    // through a drain episode instead of being starved for its whole length. Returns the bytes this
+    // pass handed to GNS, which is the share of a slot's delivery the backlog accounts for.
+    int Drain(int slot, uint32_t hConn, int sendBufBytes);
 
     // True when the slot's backlog has tripped a fatal bound (no-progress or byte cap). Sets
     // `reason` to a static string. The caller on the net thread kicks or closes; this class

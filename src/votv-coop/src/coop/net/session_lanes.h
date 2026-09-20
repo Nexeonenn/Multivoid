@@ -30,6 +30,12 @@ inline bool IsAdmissionKind(ReliableKind k) {
 
 inline Lane LaneForKind(ReliableKind k) {
     switch (k) {
+    // The link probe and its echo ride High because that is the lane whose delay the measurement
+    // is about: a reading taken on Bulk would time the bulk queue instead of the path the pose
+    // stream takes. Pinned as a pair -- an echo on another lane measures a different queue than
+    // the probe it answers.
+    case ReliableKind::LinkProbe:      return Lane::High;
+    case ReliableKind::LinkProbeReply: return Lane::High;
     case ReliableKind::TeleportClient: return Lane::High;
     case ReliableKind::RestoreVitals:  return Lane::High;
     case ReliableKind::ItemActivate:   return Lane::High;
@@ -259,6 +265,10 @@ inline bool IsPreWorldSendableKind(ReliableKind k) {
     // swallowed; the client's dedupe makes the overlap with the snapshot idempotent.
     case ReliableKind::EventFire:
     case ReliableKind::ClientWorldReady:
+    // The link probe and its echo: the joiner's download is the one window whose link we most need
+    // measured, and both are answered on the net thread and touch no world.
+    case ReliableKind::LinkProbe:
+    case ReliableKind::LinkProbeReply:
     // PropDriveEnd stays gated: it names a prop by eid, which a joiner has only after its world is up,
     // and the world-ready replay re-sends every driven prop's pose in any case.
         return true;

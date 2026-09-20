@@ -587,8 +587,10 @@ void Session::HandleConnStatusChanged(void* info) {
             // a still-queued reliable from this peer dispatch after the teardown.
             peerConns_[slot].store(0);
             peerLanesConfigured_[slot].store(false, std::memory_order_release);
-            // The departing peer's queued reliable state dies with it.
+            // The departing peer's queued reliable state dies with it, and so does the link
+            // measurement: the next occupant's GNS counters start at zero, so ours must too.
             backlog_.FreeSlot(slot);
+            rateControl_.FreeSlot(slot);
             relayEligible_[slot].store(0, std::memory_order_release);
         }
         // A terminal state requires CloseConnection to release the handle (the GNS header).
@@ -725,8 +727,10 @@ void Session::LeaveHost(EndReason code, const char* why) {
 // 0), shared by the blind and the token-checked entry points.
 bool Session::KickClaimed(int peerSlot, uint32_t hConn, EndReason code, const char* reason) {
     peerLanesConfigured_[peerSlot].store(false, std::memory_order_release);
-    // The delivery guarantee is scoped to the connection: the queued state dies with the peer.
+    // The delivery guarantee is scoped to the connection: the queued state dies with the peer, and
+    // the link measurement with it.
     backlog_.FreeSlot(peerSlot);
+    rateControl_.FreeSlot(peerSlot);
     relayEligible_[peerSlot].store(0, std::memory_order_release);
 
     if (auto* sockets = SteamNetworkingSockets()) {

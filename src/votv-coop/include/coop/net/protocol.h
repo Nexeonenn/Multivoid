@@ -30,7 +30,7 @@ inline constexpr uint32_t kMagic = 0x564D5450u;
 // This file is past the 1500-line hard cap and stays there: it is the single-feature exception the
 // rule names. One wire format, whose enum, payload structs and static_asserts are read together;
 // splitting it would put a kind's number in one file and its bytes in another.
-inline constexpr uint16_t kProtocolVersion = 167;
+inline constexpr uint16_t kProtocolVersion = 168;
 
 // Default LAN port (overridable via multivoid.ini "net.port=").
 inline constexpr uint16_t kDefaultPort = 47621;
@@ -716,6 +716,17 @@ enum class ReliableKind : uint8_t {
     // somebody else's grab, as its own. Late join: nothing to replay, a refusal is an answer to
     // one request. GrabRefusedPayload.
     GrabRefused = 140,
+
+    // Either peer to the other, and echoed straight back as LinkProbeReply: a token and the
+    // prober's send time, so the prober times one round trip over the lane its realtime traffic
+    // rides. Answered on the NET THREAD in both directions -- through the game-thread inbox the
+    // reading would carry that thread's frame time, which on a joiner loading a world is tens of
+    // seconds. Trust: the reply is honoured only for a token this peer minted and has outstanding,
+    // so an echo cannot invent a round trip. Pre-world sendable, because a joiner's download is
+    // the window the measurement is for. Late join: nothing to replay, a probe asks about now.
+    // LinkProbePayload, both directions.
+    LinkProbe = 141,
+    LinkProbeReply = 142,
 };
 
 #pragma pack(push, 1)
@@ -2608,6 +2619,16 @@ struct SnapshotEndPayload {
     uint32_t propSent;    // PropSpawn messages actually sent this drain (<= propTotal after skips)
 };
 static_assert(sizeof(SnapshotEndPayload) == 4, "SnapshotEndPayload must be exactly 4 bytes");
+
+// The link probe and its echo (LinkProbe / LinkProbeReply). The reply is the request's bytes
+// returned unchanged, so the responder keeps no state and the prober needs no table lookup beyond
+// validating the token it minted. sentMs is the prober's own clock and is never read as a time by
+// the responder, only carried.
+struct LinkProbePayload {
+    uint32_t token;    // the prober's per-slot probe counter, non-zero
+    uint32_t sentMs;   // the prober's monotonic ms at send (coop/net/net_clock.h), echoed back
+};
+static_assert(sizeof(LinkProbePayload) == 8, "LinkProbePayload must be 8 bytes");
 
 #pragma pack(pop)
 

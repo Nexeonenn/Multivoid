@@ -6,6 +6,7 @@
 #include "coop/net/session.h"
 
 #include "coop/dev/wire_census.h"
+#include "coop/net/net_clock.h"        // NowMs -- the probe's echo is timed on the net layer's clock
 #include "coop/net/peer_admission.h"   // the identity challenge every peer passes
 #include "coop/net/peer_identity.h"    // GuidForPublicKey -- the proved storage name
 #include "session_lanes.h"      // co-located private header: the admission and relayable kind lists
@@ -227,6 +228,10 @@ void Session::HandleMessage(int peerSlot, const void* data, int len) {
         break;
     case MsgType::Reliable: {
         if (len < static_cast<int>(sizeof(PacketHeader) + sizeof(ReliableHeader))) return;
+        // The receiving end of the sender's own queued-byte count, per LINK (peerSlot, not the
+        // relayed origin): the same wire packet counted at both ends, so a sender's goodput estimate
+        // is checkable against a second measurement instead of against itself.
+        rateControl_.NoteReliableReceived(peerSlot, len);
         ReliableHeader rh;
         std::memcpy(&rh, static_cast<const uint8_t*>(data) + sizeof(PacketHeader), sizeof(rh));
         if (dev::wire_census::Enabled())
@@ -287,6 +292,28 @@ void Session::HandleMessage(int peerSlot, const void* data, int len) {
         // already-admitted peer replaying it, with no consumer, and letting it into the inbox costs
         // an "unknown ReliableKind" warning per copy.
         if (IsAdmissionKind(static_cast<ReliableKind>(rh.kind))) return;
+        // The link probe pair is net-thread-terminal in both directions: an echo built on the game
+        // thread would carry that thread's frame time, and on a joiner loading a world that is tens
+        // of seconds, so the reading would be of the wrong queue entirely. The reply is the
+        // request's bytes returned unchanged, so answering costs no state.
+        if (static_cast<ReliableKind>(rh.kind) == ReliableKind::LinkProbe) {
+            if (payloadLen == static_cast<int>(sizeof(LinkProbePayload))) {
+                LinkProbePayload p{};
+                std::memcpy(&p, static_cast<const uint8_t*>(data) + sizeof(PacketHeader) +
+                                    sizeof(ReliableHeader), sizeof(p));
+                TrySendReliableToSlot(peerSlot, ReliableKind::LinkProbeReply, &p, sizeof(p));
+            }
+            return;
+        }
+        if (static_cast<ReliableKind>(rh.kind) == ReliableKind::LinkProbeReply) {
+            if (payloadLen == static_cast<int>(sizeof(LinkProbePayload))) {
+                LinkProbePayload p{};
+                std::memcpy(&p, static_cast<const uint8_t*>(data) + sizeof(PacketHeader) +
+                                    sizeof(ReliableHeader), sizeof(p));
+                rateControl_.NoteProbeReply(peerSlot, p, NowMs());
+            }
+            return;
+        }
         // The save-blob announce is diverted to the net thread too, so it lands on the same thread
         // and in the same lane order as the chunks: diverted for ordering, not size, and the sole
         // Begin path (two paths for one message is what created the window).

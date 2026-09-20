@@ -100,6 +100,22 @@ NET_THREAD_TERMINAL = {
         "must": [(SESSION, r"==\s*ReliableKind::SaveTransferChunk\s*\)\s*\{",
                   "the net-thread branch that diverts the chunk to bulkSink_")],
     },
+    "LinkProbe": {
+        "reason": "The round-trip probe is answered on the net thread in both directions. Through "
+                  "the game-thread inbox the echo would carry that thread's frame time, which on a "
+                  "joiner loading a world is tens of seconds, so the reading would be of the wrong "
+                  "queue. Losing this branch makes every probe an unknown-kind warning and the "
+                  "measurement silently unanswerable.",
+        "must": [(SESSION, r"==\s*ReliableKind::LinkProbe\s*\)\s*\{",
+                  "the net-thread branch that echoes the probe back")],
+    },
+    "LinkProbeReply": {
+        "reason": "The echo's arrival time IS the measurement, so it is taken on the net thread at "
+                  "receipt. Losing this branch leaves the prober's tokens outstanding until they "
+                  "expire as lost, and every link reads as unmeasurable.",
+        "must": [(SESSION, r"==\s*ReliableKind::LinkProbeReply\s*\)\s*\{",
+                  "the net-thread branch that closes the round trip")],
+    },
 }
 # The three admission kinds share ONE interception, so they share its required pattern --
 # and each must additionally still be named by the predicate that interception calls.

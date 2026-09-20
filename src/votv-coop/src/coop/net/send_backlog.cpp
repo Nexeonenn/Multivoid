@@ -62,9 +62,12 @@ void SendBacklog::ResetLocked_(SlotQ& s) {
     s.dyingLogged = false;
 }
 
-bool SendBacklog::SendOrQueue(int slot, int lane, uint32_t hConn, const uint8_t* wire, int len) {
-    if (slot < 0 || slot >= static_cast<int>(coop::players::kMaxPeers)) return false;
-    if (lane < 0 || lane >= kLaneCount || !wire || len <= 0 || hConn == 0) return false;
+SendOutcome SendBacklog::SendOrQueue(int slot, int lane, uint32_t hConn,
+                                     const uint8_t* wire, int len) {
+    if (slot < 0 || slot >= static_cast<int>(coop::players::kMaxPeers))
+        return SendOutcome::Dropped;
+    if (lane < 0 || lane >= kLaneCount || !wire || len <= 0 || hConn == 0)
+        return SendOutcome::Dropped;
     SlotQ& s = slots_[slot];
     std::lock_guard<std::mutex> lk(s.mu);
     // A backlog stamped for a PREVIOUS connection is dead state -- discard it
@@ -82,7 +85,7 @@ bool SendBacklog::SendOrQueue(int slot, int lane, uint32_t hConn, const uint8_t*
         // concurrent producer cannot slip a packet into the stream between our
         // refusal and our append.
         const int64_t rc = AttemptSend_(hConn, lane, wire, len);
-        if (rc >= 0) return true;
+        if (rc >= 0) return SendOutcome::Streamed;
         if (rc != -k_EResultLimitExceeded) {
             // Dying/dead connection (NoConnection / InvalidState) or our own
             // bug (InvalidParam). Never queued: the slot's teardown owns the
@@ -95,7 +98,7 @@ bool SendBacklog::SendOrQueue(int slot, int lane, uint32_t hConn, const uint8_t*
                         "connection dying (not queued; further lines folded)",
                         slot, lane, static_cast<long long>(rc));
             }
-            return false;
+            return SendOutcome::Dropped;
         }
         // -LimitExceeded: backpressure. Fall through to queue.
     }
@@ -121,26 +124,27 @@ bool SendBacklog::SendOrQueue(int slot, int lane, uint32_t hConn, const uint8_t*
     s.totalBytes += static_cast<size_t>(len);
     s.episodeQueued++;
     if (s.totalBytes > s.episodePeakBytes) s.episodePeakBytes = s.totalBytes;
-    return true;
+    return SendOutcome::Queued;
 }
 
-void SendBacklog::Drain(int slot, uint32_t hConn, int sendBufBytes) {
-    if (slot < 0 || slot >= static_cast<int>(coop::players::kMaxPeers)) return;
+int SendBacklog::Drain(int slot, uint32_t hConn, int sendBufBytes) {
+    if (slot < 0 || slot >= static_cast<int>(coop::players::kMaxPeers)) return 0;
     SlotQ& s = slots_[slot];
     std::lock_guard<std::mutex> lk(s.mu);
-    if (s.totalBytes == 0) return;
+    if (s.totalBytes == 0) return 0;
     if (hConn == 0 || s.hConn != hConn) {
         // The connection this backlog belonged to is gone (slot empty or
         // recycled). Person Y must never receive person X's queued state.
         UE_LOGW("send_backlog: slot %d dropping %zu queued B for stale conn 0x%08x "
                 "(live=0x%08x)", slot, s.totalBytes, s.hConn, hConn);
         ResetLocked_(s);
-        return;
+        return 0;
     }
     // Reserve: stop refilling once pending crosses sendBufBytes - kReserve, keeping headroom
     // for the UnreliableNoDelay pose and voice streams. The rc below remains the correctness
     // backstop -- this read is a fairness gate.
     int pending = PendingBytesTotal_(hConn);
+    int streamed = 0;
     bool progressed = false;
     bool blocked = false;
     int sentThisPass = 0;  // kDrainPassCap bounds the mutex hold
@@ -163,6 +167,7 @@ void SendBacklog::Drain(int slot, uint32_t hConn, int sendBufBytes) {
                 break;
             }
             pending += len;
+            streamed += len;
             l.bytes -= static_cast<size_t>(len);
             s.totalBytes -= static_cast<size_t>(len);
             l.q.pop_front();
@@ -179,6 +184,7 @@ void SendBacklog::Drain(int slot, uint32_t hConn, int sendBufBytes) {
         s.episodeQueued = 0;
         s.episodePeakBytes = 0;
     }
+    return streamed;
 }
 
 bool SendBacklog::CheckFatal(int slot, const char** reason) {
