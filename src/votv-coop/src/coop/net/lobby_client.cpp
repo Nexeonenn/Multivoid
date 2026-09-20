@@ -206,12 +206,15 @@ LatestInfo LobbyClient::FetchLatest(const std::string& masterUrl, int timeoutMs)
 ThanksFetch LobbyClient::FetchThanks(const std::string& masterUrl, int timeoutMs,
                                      std::string& outText) {
     const http::Response resp = http::Get(masterUrl, "/v1/thanks", timeoutMs);
+    // 404 is the ONE answer that means this master has no list, and the only one a caller may
+    // act on destructively. Everything else -- no answer, a 503 for a list the master holds but
+    // could not serve this moment, a body that does not parse -- is "no word from the master".
     if (resp.ok && resp.status == 404) {
         UE_LOGI("lobby: /v1/thanks -- this master serves no list");
         return ThanksFetch::NoList;
     }
     if (!resp.ok || resp.status != 200) {
-        UE_LOGI("lobby: /v1/thanks -- no answer from the master (ok=%d status=%d)",
+        UE_LOGI("lobby: /v1/thanks -- no usable answer from the master (ok=%d status=%d)",
                 resp.ok ? 1 : 0, resp.status);
         return ThanksFetch::Unreachable;
     }
@@ -222,7 +225,13 @@ ThanksFetch LobbyClient::FetchThanks(const std::string& masterUrl, int timeoutMs
     }
     // The cap is the list parser's own file bound plus slack; a longer text is refused there.
     outText = J::StrN(j, "text", 80 * 1024);
-    return outText.empty() ? ThanksFetch::NoList : ThanksFetch::Text;
+    // A 200 with no text is not the master saying it has none -- it never serves an empty list,
+    // so this is a malformed answer, and malformed is "no word", never a reason to evict.
+    if (outText.empty()) {
+        UE_LOGW("lobby: /v1/thanks -- 200 with an empty text; treating it as no answer");
+        return ThanksFetch::Unreachable;
+    }
+    return ThanksFetch::Text;
 }
 
 JoinInfo LobbyClient::Join(const std::string& masterUrl, const std::string& lobbyId,

@@ -33,10 +33,16 @@ includes short-lived TURN credentials the master mints from a shared secret, the
 TURN server checks. The master also answers the update check with the latest released pair; with
 no released record it answers nothing, and the client stays silent. And it serves the thanks
 list the main menu rolls ([ui.md](ui.md)): the text of one file on the box, named by
-`COOP_THANKS_FILE` and re-read at most every thirty seconds, so publishing a name is copying a
-file, with no restart. A missing, empty, oversized or non-UTF-8 file answers 404, which the
-client reads as "this master serves no list": it drops what this master said before and shows
-the copy in its build. The disk is read off the runtime's threads and outside the cache's lock.
+`COOP_THANKS_FILE` and re-read at most every thirty seconds, so publishing a name is moving a
+file into place, with no restart. **Three answers, and only one of them is destructive.** The text
+is served as 200. A file that is not there at all answers 404, the master saying it has no list,
+and that is the one answer on which a client drops what this master said before and shows the copy
+in its build. A file that is there but cannot be served whole this moment -- empty, oversized, not
+UTF-8, unreadable -- is not a removal: the last good copy keeps being served, and if there is none
+yet the answer is 503, on which the client keeps whatever it already holds. That distinction is
+what makes publishing safe while players are connected. The disk is read off the runtime's threads
+and outside the cache's lock, and the response body is built once per re-read window rather than
+per request.
 
 The master never sees game traffic. Its posture is the ordinary one for a public endpoint:
 per-address and per-class rate limits, a global and a per-address lobby cap, an opaque lobby id

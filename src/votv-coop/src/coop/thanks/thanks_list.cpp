@@ -35,6 +35,10 @@ constexpr size_t kMaxRevisionDigits = 9;  // fits an int with room; a longer one
 const wchar_t* kCacheFileName = L"multivoid_thanks.txt";
 // The cache's first line names the master it came from. It is a comment to the list's parser.
 constexpr const char* kCacheMasterTag = ";master ";
+// How much room that line may take. The reader sizes its buffer as the list's cap plus this,
+// so a configured master address longer than the slack would write a file the next boot
+// refuses to read, and the cache would silently never load; a longer address goes uncached.
+constexpr size_t kCacheTagSlack = 512;
 constexpr uint64_t kFetchFloorMs = 8000;  // the same floor the version check keeps
 
 std::mutex g_mu;
@@ -144,7 +148,7 @@ std::wstring CachePath() {
 bool ReadFileBytes(const std::wstring& path, std::string& out) {
     FILE* f = nullptr;
     if (_wfopen_s(&f, path.c_str(), L"rb") != 0 || !f) return false;
-    std::string buf(kMaxFileBytes + 512 + 1, '\0');  // the list's cap plus the master line
+    std::string buf(kMaxFileBytes + kCacheTagSlack + 1, '\0');  // the list's cap plus the master line
     const size_t n = std::fread(buf.data(), 1, buf.size(), f);
     std::fclose(f);
     if (n == 0 || n >= buf.size()) return false;
@@ -216,8 +220,52 @@ bool ReadCacheFor(const std::string& masterUrl, std::string& outRaw) {
 
 void WriteCacheFor(const std::string& masterUrl, const std::string& raw) {
     const std::wstring path = CachePath();
-    if (path.empty() || !WriteFileBytes(path, std::string(kCacheMasterTag) + masterUrl + "\n" + raw))
+    const std::string tag = std::string(kCacheMasterTag) + masterUrl + "\n";
+    // A tag past the reader's slack writes a file that never loads again, which reads as "the
+    // cache keeps vanishing"; refusing to write it says so once instead.
+    if (tag.size() >= kCacheTagSlack) {
+        UE_LOGW("thanks_list: the master address is too long to tag a cache with (%zu bytes); the "
+                "downloaded list lasts this run only", tag.size());
+        return;
+    }
+    if (path.empty() || !WriteFileBytes(path, tag + raw))
         UE_LOGW("thanks_list: the downloaded list could not be cached; it lasts this run only");
+}
+
+// THE RULE THIS LANE EXISTS FOR: only the master SAYING it has no list may retire the copy a
+// client cached from it. A text it served that this parser refuses is one bad publish -- a
+// mistyped revision, a file grown past the cap -- and a bad publish must never cost every player
+// the list they already had. Pure, so the decision can be asserted without a master to ask.
+bool RetiresCachedCopy(coop::net::lobby::ThanksFetch got, bool parsed) {
+    using coop::net::lobby::ThanksFetch;
+    if (got == ThanksFetch::NoList) return true;       // the master has nothing: its last word falls
+    if (got == ThanksFetch::Unreachable) return false;  // no word at all: keep what we have
+    return false;                                       // a text, parsed or not, never retires a copy
+    (void)parsed;
+}
+
+// Un-gated, at Init: the interesting cases are a master serving a broken list and a master gone
+// quiet, and no drill stages either. A wrong verdict here does not crash -- it silently empties
+// every player's menu -- which is exactly the kind of decision that reads as working.
+void RunSelftest() {
+    using coop::net::lobby::ThanksFetch;
+    struct Row { ThanksFetch got; bool parsed; bool retires; const char* what; };
+    static const Row rows[] = {
+        {ThanksFetch::NoList,      false, true,  "an explicit no-list retires the cached copy"},
+        {ThanksFetch::Unreachable, false, false, "silence keeps it"},
+        {ThanksFetch::Text,        true,  false, "a good text keeps it (and replaces it)"},
+        {ThanksFetch::Text,        false, false, "a text this parser refuses keeps it"},
+    };
+    int bad = 0;
+    for (const Row& r : rows) {
+        if (RetiresCachedCopy(r.got, r.parsed) != r.retires) {
+            UE_LOGE("thanks_list selftest FAIL: %s", r.what);
+            ++bad;
+        }
+    }
+    if (bad == 0)
+        UE_LOGI("thanks_list selftest: ALL PASS (%zu rows) -- only an explicit no-list retires a "
+                "cached copy", sizeof(rows) / sizeof(rows[0]));
 }
 
 void FetchOnce(const std::string& masterUrl) {
@@ -225,11 +273,19 @@ void FetchOnce(const std::string& masterUrl) {
     std::string raw;
     const auto got = coop::net::lobby::LobbyClient::FetchThanks(masterUrl, 8000, raw);
     if (got == coop::net::lobby::ThanksFetch::Unreachable) return;  // no word: keep what we have
+    // Only the master SAYING it has no list may retire what it said before. A text it served that
+    // this parser refuses is not that answer: it is one bad publish -- a mistyped revision, a file
+    // grown past the cap -- and treating it as "nothing to show" would delete a good cache over a
+    // typo and roll every menu back to the build's copy until the next publish.
     List probe;
-    // The master answered. "No list" and a text the parser refuses both mean this master has
-    // nothing to show, and what it said before no longer stands.
-    if (got == coop::net::lobby::ThanksFetch::NoList || !Parse(raw.data(), raw.size(), probe))
-        raw.clear();
+    const bool parsed = got == coop::net::lobby::ThanksFetch::Text &&
+                        Parse(raw.data(), raw.size(), probe);
+    if (!parsed && !RetiresCachedCopy(got, parsed)) {
+        UE_LOGW("thanks_list: the master's copy does not parse (%zu bytes) -- keeping what is "
+                "cached; only an explicit no-list retires it", raw.size());
+        return;
+    }
+    if (!parsed) raw.clear();  // NoList: this master has nothing, so its last word no longer stands
     {
         std::lock_guard<std::mutex> lk(g_mu);
         if (raw == g_masterRaw) return;  // the same word as last time: nothing to write, nothing to rebuild
@@ -297,6 +353,7 @@ bool Parse(const char* text, size_t size, List& out) {
 }
 
 void Init() {
+    RunSelftest();
     std::string raw;
     List embedded;
     if (EmbeddedBytes(raw) && Parse(raw.data(), raw.size(), embedded)) {

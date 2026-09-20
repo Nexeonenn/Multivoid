@@ -14,7 +14,7 @@ use coop_server::common::{
     clamp_str, ct_eq, env_int, env_str, identity_shape_ok, log, token_hex, token_urlsafe,
     turn_creds,
 };
-use coop_server::thanks::thanks_text;
+use coop_server::thanks::{thanks_answer, Answer};
 use coop_server::tls;
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -731,6 +731,7 @@ fn reason_phrase(status: u16) -> &'static str {
         413 => "Payload Too Large",
         429 => "Too Many Requests",
         500 => "Internal Server Error",
+        503 => "Service Unavailable",
         _ => "OK",
     }
 }
@@ -917,10 +918,18 @@ async fn handle<S: AsyncRead + AsyncWrite + Unpin>(mut stream: S, peer_ip: Strin
         )
         .await;
     } else if method == "GET" && path == "/v1/thanks" {
-        // The thanks list the mod's main menu rolls: one file's text, or 404 when there is none.
-        match thanks_text().await {
-            Some(text) => write_response(&mut stream, 200, &json_bytes(&json!({"text": *text}))).await,
-            None => write_response(&mut stream, 404, &json_bytes(&json!({"error": "no list"}))).await,
+        // The thanks list the mod's main menu rolls. Three answers, and the mod acts on the
+        // difference: the text; 404, the only answer that lets a client retire the copy it cached
+        // from us; 503, a list we have and could not serve this moment, on which a client keeps
+        // what it holds. The body is serialized once per re-read window, not per request.
+        match thanks_answer().await {
+            Answer::Body(body) => write_response(&mut stream, 200, &body).await,
+            Answer::NoList => {
+                write_response(&mut stream, 404, &json_bytes(&json!({"error": "no list"}))).await
+            }
+            Answer::Unavailable => {
+                write_response(&mut stream, 503, &json_bytes(&json!({"error": "list unavailable"}))).await
+            }
         }
     } else if method == "GET" && path == "/healthz" {
         let n = lock_state().lobbies.len();

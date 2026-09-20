@@ -68,9 +68,14 @@ builds.
    cohort, since the client has no dev-or-stable axis and compares the build number alone. Then
    `.github/ci/verify_latest.ps1` must pass (`-AllowDev` when the master was pointed at a
    prerelease on purpose).
-   If `src/votv-coop/assets/thanks/thanks.txt` changed since the last release, copy it to the
+   If `src/votv-coop/assets/thanks/thanks.txt` changed since the last release, publish it to the
    master's `COOP_THANKS_FILE` too: the build embeds it, the master serves it, and the higher
-   `revision` wins in the game, so the two are kept equal.
+   `revision` wins in the game, so the two are kept equal. **Put it in place atomically** -- copy
+   beside the target and `mv` onto it, never write over it in place. A plain copy truncates the
+   destination first, and a read landing in that window sees a file it cannot serve whole. The
+   master answers such a moment by serving its last good copy rather than "no list", so an
+   in-place write no longer costs players their cached list, but an atomic move means no reader
+   ever sees the seam.
 9. **The mod store.** Upload the same zip to the package listing; never delete a listed version,
    deprecate it.
 
