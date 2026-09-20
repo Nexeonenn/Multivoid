@@ -31,7 +31,11 @@ version and, on a join, asks the master for the way to dial the host: the creden
 identities and the ICE configuration (`coop/net/lobby_client`). For a brokered lobby that
 includes short-lived TURN credentials the master mints from a shared secret, the same recipe the
 TURN server checks. The master also answers the update check with the latest released pair; with
-no released record it answers nothing, and the client stays silent.
+no released record it answers nothing, and the client stays silent. And it serves the thanks
+list the main menu rolls ([ui.md](ui.md)): the text of one file on the box, named by
+`COOP_THANKS_FILE` and re-read at most every thirty seconds, so publishing a name is copying a
+file, with no restart. A missing, empty, oversized or non-UTF-8 file answers 404 and the client
+keeps the copy it has.
 
 The master never sees game traffic. Its posture is the ordinary one for a public endpoint:
 per-address and per-class rate limits, a global and a per-address lobby cap, an opaque lobby id
@@ -85,6 +89,7 @@ locally for a scripted run, and serves a synthetic lobby list to the browser in 
 | `/v1/host`, `/v1/heartbeat`, `/v1/visibility`, `/v1/leave` | the host | the announce; the keepalive with players and listing; the listing flip; the leave |
 | `/v1/lobbies`, `/v1/join` | the client | the list for a version; the dialing information for a lobby |
 | `/v1/latest`, `/healthz` | the client; an operator | the released pair; liveness |
+| `/v1/thanks` | the client, on opening the browser | the thanks list's text |
 | the signaling lines | both peers | the greeting, the challenge and its proof, the forwarded candidates |
 
 ## Late join

@@ -14,6 +14,7 @@ use coop_server::common::{
     clamp_str, ct_eq, env_int, env_str, identity_shape_ok, log, token_hex, token_urlsafe,
     turn_creds,
 };
+use coop_server::thanks::thanks_text;
 use coop_server::tls;
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -915,6 +916,12 @@ async fn handle<S: AsyncRead + AsyncWrite + Unpin>(mut stream: S, peer_ip: Strin
             &json_bytes(&json!({"proto": proto, "mod": mod_str, "url": url})),
         )
         .await;
+    } else if method == "GET" && path == "/v1/thanks" {
+        // The thanks list the mod's main menu rolls: one file's text, or 404 when there is none.
+        match thanks_text() {
+            Some(text) => write_response(&mut stream, 200, &json_bytes(&json!({"text": text}))).await,
+            None => write_response(&mut stream, 404, &json_bytes(&json!({"error": "no list"}))).await,
+        }
     } else if method == "GET" && path == "/healthz" {
         let n = lock_state().lobbies.len();
         write_response(&mut stream, 200, &json_bytes(&json!({"ok": true, "lobbies": n}))).await;

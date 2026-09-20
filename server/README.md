@@ -35,8 +35,12 @@ limits and per-IP caps are the wrong fixture for many synthetic rows from one ad
 ## The wire
 
 - **Endpoints**: `/v1/host`, `/v1/heartbeat`, `/v1/leave`, `/v1/visibility`, `/v1/join`,
-  `/v1/lobbies`, `/v1/latest`, `/healthz`. The mod's side is `coop/net/lobby_client` and
-  `coop/net/lobby_announcer`.
+  `/v1/lobbies`, `/v1/latest`, `/v1/thanks`, `/healthz`. The mod's side is
+  `coop/net/lobby_client` and `coop/net/lobby_announcer`.
+- **The thanks list**: `/v1/thanks` answers `{"text": ...}` with the file `COOP_THANKS_FILE`
+  names (default `/etc/coop-thanks.txt`), a copy of `src/votv-coop/assets/thanks/thanks.txt`.
+  Re-read at most every thirty seconds, capped at 64 KiB, 404 when it cannot be served whole.
+  Publishing a name is copying the file to the box; nothing restarts.
 - **The TURN credential**, the byte-exact spot: `username = "<unixExp>:<label>"`,
   `password = base64(HMAC-SHA1(TURN_SECRET, username))`, `ttl = 120`, two `?transport` URIs.
   Unit-tested against a fixed reference vector; a mismatch breaks coturn auth silently.
