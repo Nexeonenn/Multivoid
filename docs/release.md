@@ -73,9 +73,9 @@ builds.
    `revision` wins in the game, so the two are kept equal. **Put it in place atomically** -- copy
    beside the target and `mv` onto it, never write over it in place. A plain copy truncates the
    destination first, and a read landing in that window sees a file it cannot serve whole. The
-   master answers such a moment by serving its last good copy rather than "no list", so an
-   in-place write no longer costs players their cached list, but an atomic move means no reader
-   ever sees the seam.
+   master answers such a moment by serving its last good copy rather than "no list", which keeps
+   an in-place write from costing players their cached list; an atomic move means no reader ever
+   sees the seam at all.
 9. **The mod store.** Upload the same zip to the package listing; never delete a listed version,
    deprecate it.
 
