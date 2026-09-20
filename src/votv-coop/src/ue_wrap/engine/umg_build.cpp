@@ -499,10 +499,9 @@ bool SetSlotHAlignLive(void* slot, uint8_t h) {
 
 bool WidgetDesiredSize(void* widget, FVector2D& out) {
     if (!widget) return false;
-    static void* const sFn = [] {
-        void* w = R::FindClass(P::name::WidgetClass);
-        return w ? R::FindFunction(w, L"GetDesiredSize") : nullptr;
-    }();
+    // The same cache, for the same reason: a miss here reads as "every column fits".
+    static FnCache sCache{P::name::WidgetClass, L"GetDesiredSize", nullptr, false};
+    void* const sFn = Resolve(sCache);
     if (!sFn) return false;
     ParamFrame f(sFn);
     if (!Call(widget, f)) return false;
@@ -512,10 +511,10 @@ bool WidgetDesiredSize(void* widget, FVector2D& out) {
 
 bool SetRenderTranslation(void* widget, const FVector2D& translation) {
     if (!widget) return false;
-    static void* const sFn = [] {
-        void* w = R::FindClass(P::name::WidgetClass);
-        return w ? R::FindFunction(w, L"SetRenderTranslation") : nullptr;
-    }();
+    // Resolved through the cache that LOGS a miss. A silent one here is invisible in the game: the
+    // roll simply stops scrolling, which looks exactly like a column that fits.
+    static FnCache sCache{P::name::WidgetClass, L"SetRenderTranslation", nullptr, false};
+    void* const sFn = Resolve(sCache);
     if (!sFn) return false;
     ParamFrame f(sFn);
     f.Set<FVector2D>(L"Translation", translation);

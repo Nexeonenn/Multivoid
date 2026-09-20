@@ -272,6 +272,11 @@ void FetchOnce(const std::string& masterUrl) {
     if (coop::shutdown::IsShuttingDown()) return;
     std::string raw;
     const auto got = coop::net::lobby::LobbyClient::FetchThanks(masterUrl, 8000, raw);
+    // The fetch blocks for up to eight seconds and this thread is detached, so teardown can begin
+    // underneath it. Asked again here, before anything is written: a process that exits between a
+    // staging write and its rename leaves a stray file nobody reads, and nothing downstream of a
+    // shutdown is worth doing.
+    if (coop::shutdown::IsShuttingDown()) return;
     if (got == coop::net::lobby::ThanksFetch::Unreachable) return;  // no word: keep what we have
     // Only the master SAYING it has no list may retire what it said before. A text it served that
     // this parser refuses is not that answer: it is one bad publish -- a mistyped revision, a file
@@ -352,8 +357,32 @@ bool Parse(const char* text, size_t size, List& out) {
     return true;
 }
 
+// A staging file an earlier run left behind: the name carries the writing process's id, so one
+// that is not ours is from a run that is over. Nothing ever reads these; they are swept at boot so
+// a killed fetch cannot litter the game's folder indefinitely.
+void SweepStaleStaging() {
+    const std::wstring path = CachePath();
+    if (path.empty()) return;
+    const std::wstring pattern = path + L".tmp*";
+    WIN32_FIND_DATAW fd{};
+    HANDLE h = ::FindFirstFileW(pattern.c_str(), &fd);
+    if (h == INVALID_HANDLE_VALUE) return;
+    const std::wstring mine = L".tmp" + std::to_wstring(::GetCurrentProcessId());
+    const std::wstring dir = path.substr(0, path.find_last_of(L'\\') + 1);
+    int swept = 0;
+    do {
+        const std::wstring name = fd.cFileName;
+        if (name.size() >= mine.size() && name.compare(name.size() - mine.size(), mine.size(), mine) == 0)
+            continue;  // ours, and a fetch may be writing it right now
+        if (::DeleteFileW((dir + name).c_str())) ++swept;
+    } while (::FindNextFileW(h, &fd));
+    ::FindClose(h);
+    if (swept > 0) UE_LOGI("thanks_list: swept %d abandoned staging file(s)", swept);
+}
+
 void Init() {
     RunSelftest();
+    SweepStaleStaging();
     std::string raw;
     List embedded;
     if (EmbeddedBytes(raw) && Parse(raw.data(), raw.size(), embedded)) {
