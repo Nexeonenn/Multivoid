@@ -2621,14 +2621,13 @@ struct SnapshotEndPayload {
 static_assert(sizeof(SnapshotEndPayload) == 4, "SnapshotEndPayload must be exactly 4 bytes");
 
 // The link probe and its echo (LinkProbe / LinkProbeReply). The reply is the request's bytes
-// returned unchanged, so the responder keeps no state and the prober needs no table lookup beyond
-// validating the token it minted. sentMs is the prober's own clock and is never read as a time by
-// the responder, only carried.
+// returned unchanged, so the responder keeps no state at all. The token is the whole payload: the
+// prober records when it minted each one, so a send time on the wire would be a field nobody reads
+// and a number a peer could lie about.
 struct LinkProbePayload {
     uint32_t token;    // the prober's per-slot probe counter, non-zero
-    uint32_t sentMs;   // the prober's monotonic ms at send (coop/net/net_clock.h), echoed back
 };
-static_assert(sizeof(LinkProbePayload) == 8, "LinkProbePayload must be 8 bytes");
+static_assert(sizeof(LinkProbePayload) == 4, "LinkProbePayload must be 4 bytes");
 
 #pragma pack(pop)
 

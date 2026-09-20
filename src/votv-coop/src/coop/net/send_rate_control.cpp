@@ -17,25 +17,28 @@ void SendRateControl::Reset() {
         s.m = Measured{};
     }
     costUs_ = 0;
-    costCalls_ = 0;
+    costPasses_ = 0;
+    costLinks_ = 0;
     costWindowMs_ = 0;
     anyBusy_ = false;
 }
 
 void SendRateControl::FreeSlot(int slot) {
     if (slot < 0 || slot >= kSlots) return;
-    Slot& s = slots_[slot];
-    // Armed before the counters are cleared, so the net thread cannot read a zeroed total against a
-    // live measured block; in practice the slot's connection handle is already gone by here, so it
-    // samples nothing in between.
-    s.resetArmed.store(true, std::memory_order_release);
-    s.queuedBytes.store(0, std::memory_order_relaxed);
-    s.recvBytes.store(0, std::memory_order_relaxed);
+    // Arm only, and touch neither counter. Clearing them here would race the net thread between its
+    // arm test and its own read of the totals -- two separate operations, which no fence can join --
+    // and the sample in that window reads a zeroed total against a live window, i.e. a hugely
+    // negative delivery. The whole reset happens on the net thread, in Take_.
+    slots_[slot].resetArmed.store(true, std::memory_order_release);
 }
 
 SendRateControl::Measured& SendRateControl::Take_(int slot) {
     Slot& s = slots_[slot];
-    if (s.resetArmed.exchange(false, std::memory_order_acquire)) s.m = Measured{};
+    if (s.resetArmed.exchange(false, std::memory_order_acquire)) {
+        s.queuedBytes.store(0, std::memory_order_relaxed);
+        s.recvBytes.store(0, std::memory_order_relaxed);
+        s.m = Measured{};
+    }
     return s.m;
 }
 
@@ -47,6 +50,11 @@ void SendRateControl::NoteReliableQueued(int slot, int bytes) {
 void SendRateControl::NoteReliableReceived(int slot, int bytes) {
     if (slot < 0 || slot >= kSlots || bytes <= 0) return;
     slots_[slot].recvBytes.fetch_add(static_cast<uint64_t>(bytes), std::memory_order_relaxed);
+}
+
+void SendRateControl::NoteEchoRefused(int slot) {
+    if (slot < 0 || slot >= kSlots) return;
+    ++Take_(slot).echoesRefused;
 }
 
 int SendRateControl::RttMinFor_(const Measured& m, uint64_t nowMs) {
@@ -77,6 +85,10 @@ void SendRateControl::OpenWindow_(Measured& m, uint64_t nowMs, int64_t delivered
     m.windowRecv = recv;
     m.peakBps = 0;
     m.sawTraffic = false;
+    // The last round trip belongs to the window it was measured in. Carried across, a link that
+    // stopped answering would keep republishing one reading as though it were fresh, and the
+    // queueDelay derived from it with it.
+    m.rttLastMs = -1;
     m.rttMinWindow = -1;
     m.rttMaxWindow = -1;
     m.rttSumWindow = 0;
@@ -86,6 +98,8 @@ void SendRateControl::OpenWindow_(Measured& m, uint64_t nowMs, int64_t delivered
     m.probesRefused = 0;
     m.probesLost = 0;
     m.probesUnknown = 0;
+    m.probesSkipped = 0;
+    m.echoesRefused = 0;
 }
 
 void SendRateControl::Sample(int slot, const LinkSample& in, uint64_t nowMs) {
@@ -95,11 +109,14 @@ void SendRateControl::Sample(int slot, const LinkSample& in, uint64_t nowMs) {
 
     const int64_t queued = static_cast<int64_t>(s.queuedBytes.load(std::memory_order_relaxed));
     const uint64_t recv = s.recvBytes.load(std::memory_order_relaxed);
-    // Delivery, in our own byte units: GNS keeps both pending totals in message bytes (m_cbSize for
-    // a queued message, and segment sizes sliced out of it), so the difference is the bytes the peer
-    // has acknowledged and needs no framing term. Bytes still in our own backlog were never handed
-    // to GNS and appear in neither term. The admission exchange runs before a slot exists and is not
-    // counted, which offsets this by a constant that differentiating removes.
+    // Delivery: our count of the bytes GNS took, less what it still holds. GNS keeps both pending
+    // totals in its OWN units -- it grows each message by a 1 to 6 byte reliable-stream header before
+    // counting it -- so this reads low by that header times the messages currently in flight. The
+    // term is zero at quiescence and does not accumulate, but it moves with the in-flight message
+    // COUNT, so a burst of small reliables perturbs a one-second reading by a few tens of KB where a
+    // chunked blob perturbs it by a few hundred bytes. Bytes still in our own backlog were never
+    // handed to GNS and appear in neither term; the admission exchange runs before a slot exists and
+    // is not counted at all, a constant that differentiating removes.
     const int64_t delivered = queued - in.pendingReliable - in.sentUnackedReliable;
     m.demand = static_cast<int64_t>(in.pendingReliable) +
                static_cast<int64_t>(in.pendingUnreliable) +
@@ -107,11 +124,12 @@ void SendRateControl::Sample(int slot, const LinkSample& in, uint64_t nowMs) {
     m.last = in;
     // Busy in EITHER direction. A link with queued work of its own is busy, and so is one merely
     // delivering to us at megabytes a second: the receive counter is the second, independent
-    // measurement a sender's goodput estimate gets checked against, and gating the line on send
-    // demand alone left a downloading joiner reporting nothing at all.
-    if (m.windowMs != 0 &&
-        (m.demand >= kIdleDemandBytes ||
-         recv - m.windowRecv >= static_cast<uint64_t>(kIdleDemandBytes))) {
+    // measurement a sender's goodput estimate gets checked against, and a downloading joiner has
+    // nothing queued of its own at all.
+    m.busy = m.windowMs != 0 &&
+             (m.demand >= kIdleDemandBytes ||
+              recv - m.windowRecv >= static_cast<uint64_t>(kIdleDemandBytes));
+    if (m.busy) {
         m.sawTraffic = true;
         anyBusy_ = true;
     }
@@ -151,14 +169,15 @@ void SendRateControl::Sample(int slot, const LinkSample& in, uint64_t nowMs) {
     // a finished transfer is in the log.
     if (m.sawTraffic || m.wasBusy) {
         UE_LOGI("send_rate[slot %d]: goodput=%lld B/s (peak %lld B/s) recv=%lld B/s "
-                "gnsRate=%d B/s rtt=%d ms win=%d/%d/%d rttMin=%d queueDelay=%d ping=%d "
-                "probes sent=%d echo=%d refused=%d lost=%d stray=%d "
-                "pendRel=%d unacked=%d pendUnrel=%d backlog=%zu queued=%lld acked=%lld "
-                "recvd=%llu%s",
+                "gnsRate=%d B/s rtt=%d ms win=%d/%d/%d (min/avg/max) rttMin=%d queueDelay=%d "
+                "ping=%d probes sent=%d echo=%d refused=%d lost=%d stray=%d skipped=%d "
+                "echoRefused=%d pendRel=%d unacked=%d pendUnrel=%d backlog=%zu "
+                "queued=%lld delivered=%lld recvd=%llu%s",
                 slot, static_cast<long long>(goodput), static_cast<long long>(m.peakBps),
                 static_cast<long long>(recvBps), m.last.gnsRateBps, m.rttLastMs,
                 m.rttMinWindow, rttAvg, m.rttMaxWindow, rttMin, queueDelay, m.last.gnsPingMs,
                 m.probesSent, m.probesReplied, m.probesRefused, m.probesLost, m.probesUnknown,
+                m.probesSkipped, m.echoesRefused,
                 m.last.pendingReliable, m.last.sentUnackedReliable, m.last.pendingUnreliable,
                 m.last.backlogBytes, static_cast<long long>(queued),
                 static_cast<long long>(delivered),
@@ -172,23 +191,30 @@ void SendRateControl::Sample(int slot, const LinkSample& in, uint64_t nowMs) {
 bool SendRateControl::NextProbe(int slot, uint64_t nowMs, LinkProbePayload& out) {
     if (slot < 0 || slot >= kSlots) return false;
     Measured& m = Take_(slot);
-    if (m.demand < kIdleDemandBytes) return false;
-    if (m.lastProbeMs != 0 && nowMs - m.lastProbeMs < kProbeIntervalMs) return false;
+    // A busy link is probed ten times a second, an idle one once -- and the idle case is what gives
+    // rttMin an UNLOADED reading to be the minimum of. Probing only under load would make every
+    // sample a loaded one, and a minimum over loaded samples absorbs the very queue the baseline
+    // exists to expose: the defect that disqualifies the transport's own min-filtered ping.
+    const uint64_t interval = m.busy ? kProbeIntervalMs : kIdleProbeIntervalMs;
+    if (m.lastProbeMs != 0 && nowMs - m.lastProbeMs < interval) return false;
     ExpireOutstanding_(m, nowMs);
     int free = -1;
     for (int i = 0; i < kMaxOutstanding; ++i) {
         if (m.out[i].token == 0) { free = i; break; }
     }
-    // Every slot in flight and none answered: a further probe would measure nothing this one does
-    // not already owe an answer for.
-    if (free < 0) return false;
+    // Every slot in flight and none answered: a further probe would ask nothing these have not
+    // already asked. Counted, because on a link whose round trip outruns the ring's span the skip is
+    // why the readings thin out.
+    if (free < 0) {
+        ++m.probesSkipped;
+        return false;
+    }
     do { ++m.probeCounter; } while (m.probeCounter == 0);
     m.out[free].token = m.probeCounter;
     m.out[free].sentMs = nowMs;
     m.lastProbeMs = nowMs;
     ++m.probesSent;
     out.token = m.probeCounter;
-    out.sentMs = static_cast<uint32_t>(nowMs);
     return true;
 }
 
@@ -210,9 +236,11 @@ void SendRateControl::NoteProbeReply(int slot, const LinkProbePayload& reply, ui
     Measured& m = Take_(slot);
     for (int i = 0; i < kMaxOutstanding; ++i) {
         if (m.out[i].token == 0 || m.out[i].token != reply.token) continue;
+        // Both stamps come from one monotonic clock on one thread, so the difference is a duration
+        // by construction and needs no guard; a guard here would also drop the probe out of every
+        // counter and quietly stop the ledger from adding up.
         const uint64_t sentMs = m.out[i].sentMs;
         m.out[i].token = 0;
-        if (nowMs < sentMs) return;  // a clock cannot run backwards; no reading to take
         const int rtt = static_cast<int>(nowMs - sentMs);
         m.rttLastMs = rtt;
         ++m.probesReplied;
@@ -237,19 +265,21 @@ void SendRateControl::NoteProbeReply(int slot, const LinkProbePayload& reply, ui
 
 void SendRateControl::NoteSampleCost(uint64_t us, int links, uint64_t nowMs) {
     costUs_ += us;
-    costCalls_ += links;
+    ++costPasses_;
+    costLinks_ += links;
     if (costWindowMs_ == 0 || nowMs < costWindowMs_) {
         costWindowMs_ = nowMs;
         return;
     }
     if (nowMs - costWindowMs_ < 1000) return;
-    if (anyBusy_ && costCalls_ > 0)
-        UE_LOGI("send_rate: %d link sample pass(es) in %llu us over the last second "
-                "(%llu us per link sampled)", costCalls_,
+    if (anyBusy_ && costLinks_ > 0)
+        UE_LOGI("send_rate: %d pass(es) over %d link sample(s) in %llu us during the last second "
+                "(%llu us per link sampled)", costPasses_, costLinks_,
                 static_cast<unsigned long long>(costUs_),
-                static_cast<unsigned long long>(costUs_ / static_cast<uint64_t>(costCalls_)));
+                static_cast<unsigned long long>(costUs_ / static_cast<uint64_t>(costLinks_)));
     costUs_ = 0;
-    costCalls_ = 0;
+    costPasses_ = 0;
+    costLinks_ = 0;
     costWindowMs_ = nowMs;
     anyBusy_ = false;
 }

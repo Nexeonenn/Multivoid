@@ -8,11 +8,11 @@
 // connections by Session's ~1 Hz net-thread status sample) -- wire-level truth including
 // retransmits and acks, which no application-side window can see.
 //
-// ONE owner, no parallel counters: Session::packetsSent() and packetsRecv() delegate here.
-// Totals reset at Session::Start and SURVIVE disconnect, so the panel keeps showing what the
-// finished session moved. Every entry point is a lock-free atomic, so the game thread (reliable
-// sends), the net thread (pose stream, receive, sample) and the render thread
-// (ui/net_stats_panel) are all safe.
+// ONE owner of the SESSION totals: packetsSent()/packetsRecv() delegate here; the per-link counters
+// in coop/net/send_rate_control.h are a different quantity (reliable bytes, per slot, reset per
+// connection), never a copy of these. Totals reset at Session::Start and SURVIVE disconnect, so the
+// panel keeps showing what the finished session moved. Every entry point is a lock-free atomic, so
+// the game thread, the net thread and the render thread (ui/net_stats_panel) are all safe.
 
 #pragma once
 

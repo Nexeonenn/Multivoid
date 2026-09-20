@@ -228,12 +228,15 @@ void Session::HandleMessage(int peerSlot, const void* data, int len) {
         break;
     case MsgType::Reliable: {
         if (len < static_cast<int>(sizeof(PacketHeader) + sizeof(ReliableHeader))) return;
-        // The receiving end of the sender's own queued-byte count, per LINK (peerSlot, not the
-        // relayed origin): the same wire packet counted at both ends, so a sender's goodput estimate
-        // is checkable against a second measurement instead of against itself.
-        rateControl_.NoteReliableReceived(peerSlot, len);
         ReliableHeader rh;
         std::memcpy(&rh, static_cast<const uint8_t*>(data) + sizeof(PacketHeader), sizeof(rh));
+        // The receiving end of the sender's own queued-byte count, per LINK (peerSlot, not the
+        // relayed origin): the same wire packet counted at both ends, so a sender's goodput estimate
+        // is checkable against a second measurement instead of against itself. The admission kinds
+        // are excluded because the sending end cannot count them -- they travel before a slot exists
+        // -- and a pair of totals is only comparable over the same set of bytes.
+        if (!IsAdmissionKind(static_cast<ReliableKind>(rh.kind)))
+            rateControl_.NoteReliableReceived(peerSlot, len);
         if (dev::wire_census::Enabled())
             dev::wire_census::NoteReliable(routeSlot, static_cast<unsigned>(rh.kind));
         // payloadLen is a uint16, so only the upper bound is a real guard.
@@ -301,7 +304,10 @@ void Session::HandleMessage(int peerSlot, const void* data, int len) {
                 LinkProbePayload p{};
                 std::memcpy(&p, static_cast<const uint8_t*>(data) + sizeof(PacketHeader) +
                                     sizeof(ReliableHeader), sizeof(p));
-                TrySendReliableToSlot(peerSlot, ReliableKind::LinkProbeReply, &p, sizeof(p));
+                // A refused echo and a lost probe are the same thing to the prober, so the side that
+                // knows the difference records it.
+                if (!TrySendReliableToSlot(peerSlot, ReliableKind::LinkProbeReply, &p, sizeof(p)))
+                    rateControl_.NoteEchoRefused(peerSlot);
             }
             return;
         }

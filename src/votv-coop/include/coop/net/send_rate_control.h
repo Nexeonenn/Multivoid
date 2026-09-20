@@ -5,8 +5,8 @@
 // so a link past a few milliseconds of ping runs at the configured floor for its whole life.
 // Steering that rate needs two numbers the transport does not offer, and this is where they come
 // from: the goodput the peer acknowledges, and a round trip we time ourselves on the priority lane
-// the pose stream rides. Both are logged once a second per busy slot, so a session's log answers
-// what its links did.
+// the pose stream rides. A busy link reports both once a second; an idle one is probed slowly and
+// silently, because a baseline taken only under load is the queue it is supposed to reveal.
 //
 // This module measures and reports; it writes no send rate. `gnsRate` in its line is the pinned
 // one (coop/net/session_start.cpp).
@@ -26,17 +26,24 @@ namespace coop::net {
 
 class SendRateControl {
 public:
-    // Below this much queued work a link has nothing to measure: the probe holds and the line stays
-    // quiet, so an idle session costs no extra traffic and no log lines. A rate is a ceiling, and
-    // with nothing queued a ceiling costs nothing.
+    // Below this much work in flight, in either direction, a link counts as idle: it reports
+    // nothing, so an idle session costs no log lines. A rate is a ceiling, and with nothing queued a
+    // ceiling costs nothing.
     static constexpr int64_t kIdleDemandBytes = 8 * 1024;
 
-    // Probe cadence, and how many may be outstanding at once: 8 at 10 Hz covers a round trip up to
-    // 800 ms before a probe has to be retired unanswered.
-    static constexpr uint64_t kProbeIntervalMs = 100;
+    // Probe cadence, busy and idle. The idle one is what makes `rttMin` a BASELINE: a minimum taken
+    // only from loaded samples absorbs the bottleneck queue, which is the exact defect that
+    // disqualifies the transport's own min-filtered ping as a delay input. 1 Hz of a 32-byte
+    // datagram is 32 B/s per peer, so an idle link is measured for free.
+    static constexpr uint64_t kProbeIntervalMs     = 100;
+    static constexpr uint64_t kIdleProbeIntervalMs = 1'000;
+    // How many probes may be outstanding at once. A ninth would ask nothing the eight unanswered
+    // ones have not already asked, so the mint is skipped and counted; retirement is kProbeLostMs
+    // below, not this.
     static constexpr int      kMaxOutstanding  = 8;
-    // A probe unanswered this long is lost, not slow: GNS's own connected-timeout is shorter than
-    // any round trip we would still call a measurement.
+    // When an unanswered probe stops being a slow reading and becomes a lost one. This is our
+    // policy, not the transport's: GNS's own connected-timeout defaults to 10 s, twice this, so the
+    // link is still live when we retire a probe -- and an echo that arrives later lands in `stray`.
     static constexpr uint64_t kProbeLostMs = 5'000;
 
     // The window rttMin is taken over, in one-second buckets: long enough that a queue filling for
@@ -47,18 +54,24 @@ public:
     void Reset();
     // Slot teardown. GNS's pending counters restart with the next connection, so ours must too, or
     // the next occupant of the slot inherits a byte debt the identity below would read as delivery.
-    // Any thread -- a host-side kick runs on the game thread -- so it only ARMS the reset, which the
-    // net thread performs at its next touch of the slot. That is what keeps the measured block below
-    // single-owner without a lock.
+    // Any thread -- a host-side kick runs on the game thread -- so it ARMS only, and the net thread
+    // performs the whole reset, counters included, at its next touch of the slot. Nothing else keeps
+    // the block below single-owner: a fence cannot, because the reader's arm test and its counter
+    // read are two separate operations.
     void FreeSlot(int slot);
 
     // Reliable wire bytes GNS ACCEPTED for this slot: the whole packet, which is the number the
     // peer counts on arrival. Any thread, from the send choke points.
     void NoteReliableQueued(int slot, int bytes);
-    // Reliable wire bytes this slot's link delivered to us. Net thread. It is the receiving end of
-    // the same quantity, which is what makes a sender's goodput estimate checkable against a
-    // second, independent measurement instead of against itself.
+    // Reliable wire bytes this slot's link delivered to us, counting the same kinds the sender
+    // counts. Net thread. It is the receiving end of the same quantity, which is what makes a
+    // sender's goodput estimate checkable against a second, independent measurement instead of
+    // against itself.
     void NoteReliableReceived(int slot, int bytes);
+    // The responder could not put an echo on the wire (the send buffer was at the brim). Counted
+    // here, on the answering side, because to the prober a refused echo and a lost probe look
+    // identical, and telling them apart is the whole question of whether headroom needs a rule.
+    void NoteEchoRefused(int slot);
 
     // What the net thread read off one connection: GNS's send accounting, plus the depth of our own
     // queue in front of it. Passed in rather than read here, so this file stays free of the
@@ -87,6 +100,8 @@ public:
 
     // What the status reads themselves cost, per net-thread pass; reported once a second while any
     // link is busy, because a 10 Hz per-peer telemetry read is a claim that has to be measured.
+    // `links` is how many connections this pass read, which is why the line reports passes and link
+    // samples as two numbers -- on a three-client host they differ by 3x.
     void NoteSampleCost(uint64_t us, int links, uint64_t nowMs);
 
 private:
@@ -100,7 +115,8 @@ private:
     // Everything the net thread alone owns, in one struct so an armed teardown is one assignment
     // (the two counters beside it are atomics, written from any thread, and cannot be copied over).
     struct Measured {
-        int64_t  demand = 0;          // what NextProbe consults: is there anything to measure
+        int64_t  demand = 0;          // in-flight work on OUR send side
+        bool     busy = false;        // in flight in EITHER direction: the probe's cadence choice
         LinkSample last{};
 
         // The differentiated delivery: the previous sample, and the 1 Hz window the line reports.
@@ -125,6 +141,8 @@ private:
         int         rttCountWindow = 0;
         int         probesSent = 0, probesReplied = 0, probesRefused = 0, probesLost = 0;
         int         probesUnknown = 0;  // an echo for no token of ours
+        int         probesSkipped = 0;  // the mint the full outstanding ring refused
+        int         echoesRefused = 0;  // OUR answers to the peer the send buffer would not take
         int         rttBucketMin[kRttMinBuckets]{};
         uint64_t    rttBucketSec[kRttMinBuckets]{};
     };
@@ -153,7 +171,8 @@ private:
 
     // The sample-cost accounting, session-wide (the reads are one pass over every live slot).
     uint64_t costUs_ = 0;
-    int      costCalls_ = 0;
+    int      costPasses_ = 0;   // passes over the slot array
+    int      costLinks_ = 0;    // connections actually read, summed over those passes
     uint64_t costWindowMs_ = 0;
     bool     anyBusy_ = false;
 };
