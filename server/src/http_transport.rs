@@ -1,0 +1,96 @@
+//! The master's HTTP plumbing: the request head, the response, the connection cap. Nothing here
+//! knows what a lobby is -- the routes live in the binary and the lobby domain in `lobby`.
+
+use serde_json::Value;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::Duration;
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::time::timeout;
+
+pub const HTTP_TIMEOUT: Duration = Duration::from_secs(15);
+pub const MAX_HEADER: usize = 16 * 1024;
+pub const MAX_BODY: usize = 64 * 1024;
+pub const MAX_CONNS: usize = 256;
+
+pub static CONNS: AtomicUsize = AtomicUsize::new(0);
+
+pub fn reason_phrase(status: u16) -> &'static str {
+    match status {
+        200 => "OK",
+        400 => "Bad Request",
+        403 => "Forbidden",
+        404 => "Not Found",
+        405 => "Method Not Allowed",
+        413 => "Payload Too Large",
+        429 => "Too Many Requests",
+        500 => "Internal Server Error",
+        503 => "Service Unavailable",
+        _ => "OK",
+    }
+}
+
+pub async fn write_response<S: AsyncWrite + Unpin>(stream: &mut S, status: u16, body: &[u8]) {
+    let head = format!(
+        "HTTP/1.1 {} {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\nCache-Control: no-store\r\n\r\n",
+        status,
+        reason_phrase(status),
+        body.len()
+    );
+    // Bound the write (audit L6): a client that stops reading a large /v1/lobbies body
+    // must not pin its CONNS admission slot until the OS TCP timeout. Drop on expiry.
+    let _ = timeout(HTTP_TIMEOUT, async {
+        stream.write_all(head.as_bytes()).await?;
+        stream.write_all(body).await?;
+        stream.flush().await
+    })
+    .await;
+}
+
+pub fn json_bytes(v: &Value) -> Vec<u8> {
+    serde_json::to_vec(v).unwrap_or_else(|_| b"{}".to_vec())
+}
+
+pub fn find_subsequence(hay: &[u8], needle: &[u8]) -> Option<usize> {
+    if needle.is_empty() || hay.len() < needle.len() {
+        return None;
+    }
+    hay.windows(needle.len()).position(|w| w == needle)
+}
+
+/// Read the header block up to (and consuming) the terminating CRLFCRLF, bounded by
+/// `max`. Returns (head_bytes, leftover_body_bytes_already_read). Mirrors the Python
+/// `readuntil(b"\r\n\r\n")` with the start_server `limit`.
+pub async fn read_head<S: AsyncRead + Unpin>(
+    stream: &mut S,
+    max: usize,
+) -> Result<(Vec<u8>, Vec<u8>), HeadErr> {
+    let mut buf: Vec<u8> = Vec::with_capacity(2048);
+    let mut tmp = [0u8; 4096];
+    loop {
+        if let Some(i) = find_subsequence(&buf, b"\r\n\r\n") {
+            let leftover = buf[i + 4..].to_vec();
+            buf.truncate(i);
+            return Ok((buf, leftover));
+        }
+        if buf.len() > max {
+            return Err(HeadErr::TooLarge);
+        }
+        let n = stream.read(&mut tmp).await.map_err(|_| HeadErr::Closed)?;
+        if n == 0 {
+            return Err(HeadErr::Closed);
+        }
+        buf.extend_from_slice(&tmp[..n]);
+    }
+}
+
+pub enum HeadErr {
+    TooLarge,
+    Closed,
+}
+
+pub struct ConnGuard;
+impl Drop for ConnGuard {
+    fn drop(&mut self) {
+        CONNS.fetch_sub(1, Ordering::Relaxed);
+    }
+}
