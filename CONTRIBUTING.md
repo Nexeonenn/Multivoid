@@ -45,7 +45,8 @@ And eight architectural principles; the reasoning behind them is in
 | 7 | Two layers, two subtrees: `ue_wrap/` (engine wrapper, no gameplay or network logic) and `coop/` (gameplay and network, reaching the engine only through `ue_wrap/`). |
 | 8 | Mid-activity join is always handled: every sync lane defines what a peer joining mid-event, mid-download or mid-drive sees. |
 
-The architectural precedent is MTA:SA, vendored read-only in `reference/mtasa-blue/`. When a
+The architectural precedent is MTA:SA, read from `reference/mtasa-blue/` -- one of the upstream
+trees `reference/README.md` tells you how to clone, since they are read and never built. When a
 design question has an MTA answer, that answer is the default; a deliberate divergence says so
 in a comment at the site.
 
@@ -69,7 +70,7 @@ script that checks it, because a rule nothing enforces is a rule that decays.
 | `server/` | the master server and the signaling relay, in Rust |
 | `.github/ci/` | the scripts the workflows run: the public-surface gates, the release predicates |
 | `docs/` | the documentation; [docs/README.md](docs/README.md) is the index |
-| `reference/` | vendored read-only references (UE4SS, MTA:SA) |
+| `reference/` | the reading room: upstream trees we read and never build (MTA:SA, RE-UE4SS, ENet). Cloned locally, not carried by this repository -- [reference/README.md](reference/README.md) lists each one, its licence and the commit our citations were read at |
 
 Each source folder maps to one domain concept and is named after it. There are no catch-all
 folders (`utils`, `misc`, `helpers`), on purpose.

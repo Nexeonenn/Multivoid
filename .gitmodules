@@ -1,9 +1,3 @@
-[submodule "reference/RE-UE4SS"]
-	path = reference/RE-UE4SS
-	url = https://github.com/UE4SS-RE/RE-UE4SS.git
-[submodule "reference/mtasa-blue"]
-	path = reference/mtasa-blue
-	url = https://github.com/multitheftauto/mtasa-blue.git
 [submodule "src/votv-coop/third_party/minhook"]
 	path = src/votv-coop/third_party/minhook
 	url = https://github.com/TsudaKageyu/minhook.git

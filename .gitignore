@@ -135,10 +135,13 @@ research/clumpvis_shots/
 research/pak_re/
 research/bp_reflection/
 
-# Voice-chat RE reference: a 54MB downloaded clone (saved HTML page + a nested
-# git clone of simple-voice-chat + a Bukkit .jar). Heavy third-party reference,
-# not collaborative source -- same policy as the other reference binaries above.
-reference/VoiceChatMC/
+# Everything under reference/ is a local reading room: upstream trees we READ for precedent and
+# never build, ship or link. The repository carries only the MANIFEST -- what each tree is, its
+# upstream and the commit our citations were read at -- so a `file:line` in a comment still
+# resolves for anyone who clones the named commit, while a plain clone of this repository stays
+# small. reference/README.md rebuilds the whole room in one command.
+reference/*
+!reference/README.md
 
 # Pile-morph smoke logs + transient evidence (autotest_chippile / joinchurn runs -- dev only)
 research/*.out
@@ -154,18 +157,6 @@ docs/piles/re-artifacts/
 # Local skin-pak library: cooked paks derived from third-party models, plus their preview
 # tiles. Distribution-unsafe; the deploy reads it from disk and git never carries it.
 models/
-
-# third-party tooling drops (not our source; same policy as VoiceChatMC):
-# SourceIO = GPLv3 Blender addon (Source-engine import), unrealpak = Epic's
-# UnrealPak tool + demo videos, psk-psa = Blender PSK/PSA addon (RE reference),
-# kismet-analyzer = trumank's cooked-BP bytecode dumper release zip (dev RE only)
-reference/psk-psa-v9.1.2/
-
-# Third-party reference clones and drops under reference/: heavy source we READ for precedent and
-# never build or ship. Same policy as VoiceChatMC above.
-reference/baritone/
-reference/voidmod-extracted/
-reference/unreal-shimloader/
 
 # The multivoid.dev website workspace: every site file lives in site/, fully untracked, worked
 # on locally and deployed outside this repository.
