@@ -23,9 +23,11 @@ cargo build --release      # -> target/release/coop-master(.exe), coop-signaling
 cargo test                 # unit tests incl. the byte-exact TURN-credential vector
 ```
 
-Cross-compile for the Linux box from Windows with `cargo build --release --target
-x86_64-unknown-linux-gnu` (needs the target and a linker), or build on the box. One static
-binary per service; no interpreter on the box to rot.
+The Linux binaries are built on the box itself: copy `Cargo.toml`, `Cargo.lock`, `.cargo/` and
+`src/` there and run `cargo build --release --target x86_64-unknown-linux-musl`. TLS brought in
+`ring`, whose build compiles C, so a Windows cross-build needs a musl C cross-compiler that a
+stock Windows toolchain does not have; the box has `musl-tools`. One static binary per service;
+no interpreter on the box to rot.
 
 The rig builds and launches the signaling binary for its own scenarios, so a
 line-protocol change is proven against the copy that ships. The browser rig uses

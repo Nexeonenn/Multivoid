@@ -1,6 +1,6 @@
-# Cross-build the Linux VPS binaries from a Windows dev box without an external
-# cross-toolchain: the x86_64-unknown-linux-musl target is self-contained (Rust
-# ships a precompiled musl libc), and rust-lld emits the ELF. Produces a fully
-# static binary -> just scp + run on the VPS, no runtime deps to install.
+# The Linux VPS binaries: the x86_64-unknown-linux-musl target (Rust ships a precompiled musl
+# libc) linked by rust-lld gives a fully static binary, so there are no runtime deps to install.
+# Build it on the box: the TLS stack's `ring` compiles C in its build script, which needs a musl
+# C compiler (`musl-tools` there) that a stock Windows toolchain does not have.
 [target.x86_64-unknown-linux-musl]
 linker = "rust-lld"
