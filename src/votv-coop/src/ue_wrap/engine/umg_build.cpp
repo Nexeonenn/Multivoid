@@ -53,6 +53,7 @@ FnCache g_swGetIdx   {L"WidgetSwitcher", L"GetActiveWidgetIndex", nullptr, false
 FnCache g_imgTint    {L"Image",          L"SetBrushTintColor",    nullptr, false};
 FnCache g_sbHeight   {L"SizeBox",        L"SetHeightOverride",    nullptr, false};
 FnCache g_sbWidth    {L"SizeBox",        L"SetWidthOverride",     nullptr, false};
+FnCache g_sbMaxWidth {L"SizeBox",        L"SetMaxDesiredWidth",   nullptr, false};
 FnCache g_setClip    {L"Widget",         L"SetClipping",          nullptr, false};
 FnCache g_scrollSet  {L"ScrollBox",      L"SetScrollOffset",      nullptr, false};
 FnCache g_scrollGet  {L"ScrollBox",      L"GetScrollOffset",      nullptr, false};
@@ -392,6 +393,14 @@ bool SetSizeBoxWidth(void* sizeBox, float width) {
     if (!sizeBox || !fn) return false;
     ParamFrame f(fn);
     f.Set<float>(L"InWidthOverride", width);
+    return Call(sizeBox, f);
+}
+
+bool SetSizeBoxMaxWidth(void* sizeBox, float width) {
+    void* fn = Resolve(g_sbMaxWidth);
+    if (!sizeBox || !fn) return false;
+    ParamFrame f(fn);
+    f.Set<float>(L"InMaxDesiredWidth", width);
     return Call(sizeBox, f);
 }
 

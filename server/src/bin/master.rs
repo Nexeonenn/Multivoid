@@ -918,8 +918,8 @@ async fn handle<S: AsyncRead + AsyncWrite + Unpin>(mut stream: S, peer_ip: Strin
         .await;
     } else if method == "GET" && path == "/v1/thanks" {
         // The thanks list the mod's main menu rolls: one file's text, or 404 when there is none.
-        match thanks_text() {
-            Some(text) => write_response(&mut stream, 200, &json_bytes(&json!({"text": text}))).await,
+        match thanks_text().await {
+            Some(text) => write_response(&mut stream, 200, &json_bytes(&json!({"text": *text}))).await,
             None => write_response(&mut stream, 404, &json_bytes(&json!({"error": "no list"}))).await,
         }
     } else if method == "GET" && path == "/healthz" {

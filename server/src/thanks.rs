@@ -4,7 +4,7 @@
 //! `src/votv-coop/assets/thanks/thanks.txt`; the mod parses and bounds it, this only hands it over.
 
 use crate::common::env_str;
-use std::sync::{LazyLock, Mutex};
+use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
 /// Where the file lives unless `COOP_THANKS_FILE` says otherwise.
@@ -26,17 +26,37 @@ pub fn read_thanks_file(path: &str) -> Option<String> {
 }
 
 /// The served text, re-read from disk when the last read is older than `THANKS_REREAD`. None
-/// answers 404, which the mod reads as "no newer list" and stays on the copy it has.
-pub fn thanks_text() -> Option<String> {
-    static CACHE: LazyLock<Mutex<(Option<Instant>, Option<String>)>> =
+/// answers 404, which the mod reads as "this master serves no list" and shows its own copy.
+///
+/// The lock is held for the bookkeeping only. The request that finds the copy stale stamps the
+/// clock first, so every request beside it serves the old copy instead of queueing, then reads
+/// the disk on a blocking thread: a slow volume stalls that one request, never a runtime worker
+/// the lobby routes are waiting on.
+pub async fn thanks_text() -> Option<Arc<String>> {
+    static CACHE: LazyLock<Mutex<(Option<Instant>, Option<Arc<String>>)>> =
         LazyLock::new(|| Mutex::new((None, None)));
-    let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
-    let stale = cache.0.map(|at| at.elapsed() >= THANKS_REREAD).unwrap_or(true);
-    if stale {
-        cache.1 = read_thanks_file(&env_str("COOP_THANKS_FILE", THANKS_FILE));
-        cache.0 = Some(Instant::now());
+    {
+        let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+        // Before the first read lands there is no old copy to serve, and "none" would be a lie
+        // the mod acts on (it drops the copy it cached), so those requests each read for
+        // themselves: a burst at start-up only.
+        if let Some(at) = cache.0 {
+            if at.elapsed() < THANKS_REREAD {
+                return cache.1.clone();
+            }
+            cache.0 = Some(Instant::now());
+        }
     }
-    cache.1.clone()
+    let path = env_str("COOP_THANKS_FILE", THANKS_FILE);
+    let text = tokio::task::spawn_blocking(move || read_thanks_file(&path))
+        .await
+        .ok()
+        .flatten()
+        .map(Arc::new);
+    let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    cache.0 = Some(Instant::now());
+    cache.1 = text.clone();
+    text
 }
 
 #[cfg(test)]

@@ -41,9 +41,10 @@ using coop::thanks_list::List;
 using coop::thanks_list::Section;
 
 // The frame, in Slate units. The version lines end near y 210 and the band behind the game's
-// title starts near 412; this height ends 12 units above it. The width stops short of where the
-// menu's sub-windows open.
-constexpr float kWindowW = 440.f;
+// title starts near 412; this height ends 12 units above it. The panel is as wide as its columns
+// ask, up to a width that stops short of where the menu's sub-windows open; past it the panel
+// clips, so one very long name costs its own tail and not the layout.
+constexpr float kWindowMaxW = 440.f;
 constexpr float kWindowH = 112.f;
 // The backing: the dark band the game puts behind its own title, so the names hold against a
 // bright sky. The columns sit inside it by this much.
@@ -73,6 +74,7 @@ struct Column {
     int   lines = 0;         // text lines in one copy
     float period = 0.f;      // one copy's height plus the seam; the offset wraps here
     bool  measured = false;
+    int   measureTries = 0;  // ticks spent waiting for a layout
     bool  scrolling = false;
     int   lastUnits = -1;    // the offset last pushed to the engine
 };
@@ -85,6 +87,7 @@ uint64_t g_lastAttemptMs = 0;      // one build attempt a second while one is fa
 int  g_failures = 0;               // failed builds for this menu and list
 bool g_settled = false;            // nothing more to do for this menu and list
 constexpr int kMaxBuildAttempts = 5;
+constexpr int kMaxMeasureTries = 600;  // about five seconds of menu ticks
 std::chrono::steady_clock::time_point g_rollStart;
 
 std::wstring Wide(const std::string& utf8) {
@@ -125,9 +128,12 @@ void* BuildCopy(void* roll, const List& list, bool rightColumn, bool withHeaders
             ++lines;
         }
         firstSection = false;
+        // Each name behind a dash, as the game lists its own supporters. The dash is the
+        // roll's, not the list's: the data file holds names and nothing else.
         std::wstring names;
         for (const std::string& n : s.names) {
             if (!names.empty()) names.push_back(L'\n');
+            names += L"- ";
             names += Wide(n);
         }
         if (!NS::AddText(copy, names.c_str(), kNamePt, col, NS::kJustLeft, 0.f)) return nullptr;
@@ -166,7 +172,8 @@ bool BuildColumn(void* columns, const List& list, bool rightColumn, float padLef
     E::SetWidgetVisibility(out.second, kCollapsed);  // shown once the column is known to scroll
     U::SetContent(clip, roll);
     NS::AddVFill(column, clip, 1.f, NS::kFill, NS::kFill);  // what is left of the frame under the header
-    PadSlot(NS::AddHFill(columns, column, 1.f, NS::kFill, NS::kFill),
+    // As wide as its widest line, so the backing ends where the last column does.
+    PadSlot(NS::AddHFill(columns, column, 0.f, NS::kFill, NS::kFill),
             P::off::UHorizontalBoxSlot_Padding, padLeft, 0.f, 0.f, 0.f);
     out.roll = roll;
     return true;
@@ -197,15 +204,16 @@ bool Build(void* container, const List& list) {
     void* backing = panel ? NS::Spawn(P::name::ImageClass, panel) : nullptr;
     void* columns = backing ? NS::Spawn(L"HorizontalBox", panel) : nullptr;
     if (!columns) return false;
-    U::SetSizeBoxWidth(window, kWindowW);
+    U::SetSizeBoxMaxWidth(window, kWindowMaxW);
     U::SetSizeBoxHeight(window, kWindowH);
+    U::SetClipping(window, 1);  // ClipToBounds
     U::SetImageTintRaw(backing, kBacking);  // an image with no resource draws its tint as a solid rect
     if (void* s = U::AddChild(panel, backing))
         U::SetSlotAlign(s, P::off::UOverlaySlot_HAlign, P::off::UOverlaySlot_VAlign, NS::kFill, NS::kFill);
 
     // Both columns start at their left edge, the first under the title's own. The game sets its
     // left column against a divider because its panel is centred on one; this one hangs off the
-    // corner of the screen. A list that fills one side only is one full-width column.
+    // corner of the screen. A list that fills one side only is one column.
     const bool left = HasColumn(list, false), right = HasColumn(list, true);
     g_columns[0] = g_columns[1] = Column{};
     if (left && right) {
@@ -234,8 +242,17 @@ bool Build(void* container, const List& list) {
 // desired size reports in.
 void Measure(Column& c) {
     ue_wrap::FVector2D size{}, header{};
-    if (!U::WidgetDesiredSize(c.first, size) || size.Y < 1.f) return;  // not laid out yet
-    if (c.header && (!U::WidgetDesiredSize(c.header, header) || header.Y < 1.f)) return;
+    const bool laidOut = U::WidgetDesiredSize(c.first, size) && size.Y >= 1.f &&
+                         (!c.header || (U::WidgetDesiredSize(c.header, header) && header.Y >= 1.f));
+    if (!laidOut) {
+        // A layout normally lands within two ticks. One that never does must not cost two engine
+        // calls a tick for as long as the menu is up: the column then stays as built, standing still.
+        if (++c.measureTries >= kMaxMeasureTries) {
+            c.measured = true;
+            UE_LOGW("thanks_roll: a column was never laid out -- it stays still");
+        }
+        return;
+    }
     c.measured = true;
     c.period = size.Y + kSectionGap;
     c.scrolling = size.Y > kWindowH - 2.f * kPanelPadV - (c.header ? header.Y + kGapUnderHeader : 0.f);

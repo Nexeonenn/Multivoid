@@ -72,6 +72,11 @@ struct LatestInfo {
     std::string mod;   // human tag, e.g. "0.9.0-n"
 };
 
+// What the master said about the thanks list. "No list" is an answer (a 404: this master serves
+// none), and is not the same as no answer: the first retires a copy the master served before, the
+// second leaves everything as it was.
+enum class ThanksFetch { Text, NoList, Unreachable };
+
 class LobbyClient {
 public:
     // Kick off an async lobby-list GET against `masterUrl` ("host:port"), optionally filtered to
@@ -83,9 +88,9 @@ public:
     static LatestInfo FetchLatest(const std::string& masterUrl, int timeoutMs);
 
     // Blocking GET of the master's copy of the thanks list (coop/thanks/thanks_list.h), the file's
-    // text as served. False when the master is unreachable or serves none, which is silent: an
-    // older master answers 404. The text is untrusted; the list's parser bounds it. Worker thread.
-    static bool FetchThanks(const std::string& masterUrl, int timeoutMs, std::string& outText);
+    // text as served, into `outText` when the answer is Text. Silent either way: an older master
+    // answers 404. The text is untrusted; the list's parser bounds it. Worker thread.
+    static ThanksFetch FetchThanks(const std::string& masterUrl, int timeoutMs, std::string& outText);
 
     // Render or game thread: copy the latest fetched rows into `out`. Returns the fetch
     // generation (increments on each completed refresh) so the caller can tell new data from a

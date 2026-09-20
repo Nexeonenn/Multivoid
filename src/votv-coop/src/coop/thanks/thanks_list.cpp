@@ -5,6 +5,7 @@
 #include "coop/net/lobby_client.h"
 #include "coop/session/session_manager.h"  // MasterUrl
 #include "coop/session/shutdown.h"
+#include "coop/text/repertoire.h"
 #include "coop/text/utf8_codec.h"
 #include "ue_wrap/core/log.h"
 #include "ue_wrap/core/paths.h"
@@ -15,7 +16,6 @@
 
 #include <atomic>
 #include <cstdio>
-#include <cstdlib>
 #include <mutex>
 #include <thread>
 
@@ -30,13 +30,17 @@ constexpr size_t kMaxSections   = 8;
 constexpr size_t kMaxNames      = 2000;  // across all sections
 constexpr size_t kMaxNameBytes  = 64;
 constexpr size_t kMaxTitleBytes = 48;
+constexpr size_t kMaxRevisionDigits = 9;  // fits an int with room; a longer one refuses the copy
 
 const wchar_t* kCacheFileName = L"multivoid_thanks.txt";
+// The cache's first line names the master it came from. It is a comment to the list's parser.
+constexpr const char* kCacheMasterTag = ";master ";
 constexpr uint64_t kFetchFloorMs = 8000;  // the same floor the version check keeps
 
 std::mutex g_mu;
-List g_list;                 // the winner so far
-std::string g_cachedRaw;     // the bytes the cache file holds, so an unchanged fetch writes nothing
+List g_embedded;             // the build's own copy; what is shown when no master copy beats it
+List g_shown;                // the winner
+std::string g_masterRaw;     // what this master last said, as cached; empty for nothing
 std::atomic<uint64_t> g_generation{0};
 std::atomic<bool> g_fetchInFlight{false};
 std::atomic<uint64_t> g_fetchStartMs{0};
@@ -48,14 +52,29 @@ std::string Trim(const std::string& s) {
     return s.substr(a, b - a);
 }
 
-// One displayable string, or empty: control characters out, capped on a character boundary,
-// and refused whole when it is not well-formed UTF-8 (a repair would show a name nobody has).
+// One displayable string, or empty. Refused whole when it is not well-formed UTF-8 (a repair
+// would show a name nobody has); then the nickname lane's denylist, in codepoints: controls,
+// the line and paragraph separators, and every Default_Ignorable codepoint, which is where the
+// bidi overrides and the zero-width characters live. A name can then neither reorder the text
+// around it nor break into a second line the roll did not count.
 std::string Clean(const std::string& raw, size_t maxBytes) {
-    std::string s = Trim(coop::text::SanitizeUtf8(raw.data(), raw.size()));
-    s = coop::text::CapUtf8Bytes(std::move(s), maxBytes);
-    std::wstring probe;
-    if (!coop::text::FromUtf8Strict(s.data(), s.size(), &probe)) return {};
-    return s;
+    std::wstring wide;
+    if (!coop::text::FromUtf8Strict(raw.data(), raw.size(), &wide)) return {};
+    std::wstring kept;
+    kept.reserve(wide.size());
+    for (size_t i = 0; i < wide.size();) {
+        uint32_t c = 0;
+        const size_t units = coop::text::DecodeCodepoint(wide, i, &c);
+        const wchar_t* at = wide.data() + i;
+        i += units;
+        if (c < 0x20 || (c >= 0x7F && c <= 0x9F)) continue;   // C0, DEL, C1
+        if (c >= 0xD800 && c <= 0xDFFF) continue;             // an unpaired surrogate
+        if (c == 0x2028 || c == 0x2029) continue;             // line and paragraph separators
+        if (coop::text::IsDefaultIgnorable(c)) continue;
+        if (kept.empty() && coop::text::IsCombiningMark(c)) continue;  // nothing to combine with
+        kept.append(at, units);
+    }
+    return coop::text::CapUtf8Bytes(Trim(coop::text::ToUtf8(kept)), maxBytes);
 }
 
 bool ParseHexColour(const std::string& tok, uint32_t& out) {
@@ -69,6 +88,19 @@ bool ParseHexColour(const std::string& tok, uint32_t& out) {
         else if (c >= 'A' && c <= 'F') d = static_cast<uint32_t>(c - 'A' + 10);
         else return false;
         v = (v << 4) | d;
+    }
+    out = v;
+    return true;
+}
+
+// Digits only, and few enough that the value cannot overflow. False refuses the whole copy: the
+// revision is what orders two copies, so a copy with an unreadable one has no place in the order.
+bool ParseRevision(const std::string& val, int& out) {
+    if (val.empty() || val.size() > kMaxRevisionDigits) return false;
+    int v = 0;
+    for (const char c : val) {
+        if (c < '0' || c > '9') return false;
+        v = v * 10 + (c - '0');
     }
     out = v;
     return true;
@@ -105,11 +137,6 @@ size_t NameCount(const List& l) {
     return n;
 }
 
-// Whether `candidate`, read from a later source than `current`, replaces it.
-bool Wins(const List& candidate, const List& current) {
-    return candidate.revision >= current.revision;
-}
-
 std::wstring CachePath() {
     const std::wstring dir = ue_wrap::paths::ExeDir();
     return dir.empty() ? std::wstring() : dir + L"\\" + kCacheFileName;
@@ -118,24 +145,25 @@ std::wstring CachePath() {
 bool ReadFileBytes(const std::wstring& path, std::string& out) {
     FILE* f = nullptr;
     if (_wfopen_s(&f, path.c_str(), L"rb") != 0 || !f) return false;
-    std::string buf(kMaxFileBytes + 1, '\0');
+    std::string buf(kMaxFileBytes + 512 + 1, '\0');  // the list's cap plus the master line
     const size_t n = std::fread(buf.data(), 1, buf.size(), f);
     std::fclose(f);
-    if (n == 0 || n > kMaxFileBytes) return false;
+    if (n == 0 || n >= buf.size()) return false;
     buf.resize(n);
     out = std::move(buf);
     return true;
 }
 
 // Written beside itself and moved into place, so a crash mid-write leaves the old cache whole.
+// The staging name carries the process id: two copies of the game run from one folder would
+// otherwise write into each other's staging file and publish the mixture.
 bool WriteFileBytes(const std::wstring& path, const std::string& bytes) {
-    const std::wstring tmp = path + L".tmp";
+    const std::wstring tmp = path + L".tmp" + std::to_wstring(::GetCurrentProcessId());
     FILE* f = nullptr;
     if (_wfopen_s(&f, tmp.c_str(), L"wb") != 0 || !f) return false;
     const size_t n = std::fwrite(bytes.data(), 1, bytes.size(), f);
     std::fclose(f);
-    if (n != bytes.size()) { ::DeleteFileW(tmp.c_str()); return false; }
-    if (!::MoveFileExW(tmp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING)) {
+    if (n != bytes.size() || !::MoveFileExW(tmp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING)) {
         ::DeleteFileW(tmp.c_str());
         return false;
     }
@@ -159,14 +187,63 @@ bool EmbeddedBytes(std::string& out) {
     return true;
 }
 
-void Adopt(List&& l, const char* source) {
-    UE_LOGI("thanks_list: revision %d from the %s copy -- %zu sections, %zu names", l.revision,
-            source, l.sections.size(), NameCount(l));
+// Decide what is shown from the build's copy and what the master last said, and publish it. A
+// master's copy wins a tie, so an edit published without a new release still takes; an older one
+// loses, so a master left holding an old file cannot take names away from a newer build.
+void Settle(const char* why) {
+    List master;
+    std::lock_guard<std::mutex> lk(g_mu);
+    const bool haveMaster =
+        !g_masterRaw.empty() && Parse(g_masterRaw.data(), g_masterRaw.size(), master);
+    const bool masterWins = haveMaster && master.revision >= g_embedded.revision;
+    g_shown = masterWins ? std::move(master) : g_embedded;
+    g_generation.fetch_add(1, std::memory_order_release);
+    UE_LOGI("thanks_list: %s -- showing revision %d from the %s copy, %zu sections, %zu names", why,
+            g_shown.revision, masterWins ? "master's" : "embedded", g_shown.sections.size(),
+            NameCount(g_shown));
+}
+
+// The cache is a memo of what ONE master last said: the master's address on the first line, then
+// the text as served. A copy another master left is not this master's word and is not read.
+bool ReadCacheFor(const std::string& masterUrl, std::string& outRaw) {
+    const std::wstring path = CachePath();
+    std::string bytes;
+    if (path.empty() || !ReadFileBytes(path, bytes)) return false;
+    const std::string want = std::string(kCacheMasterTag) + masterUrl + "\n";
+    if (bytes.compare(0, want.size(), want) != 0) return false;
+    outRaw = bytes.substr(want.size());
+    return !outRaw.empty();
+}
+
+void WriteCacheFor(const std::string& masterUrl, const std::string& raw) {
+    const std::wstring path = CachePath();
+    if (path.empty() || !WriteFileBytes(path, std::string(kCacheMasterTag) + masterUrl + "\n" + raw))
+        UE_LOGW("thanks_list: the downloaded list could not be cached; it lasts this run only");
+}
+
+void FetchOnce(const std::string& masterUrl) {
+    if (coop::shutdown::IsShuttingDown()) return;
+    std::string raw;
+    const auto got = coop::net::lobby::LobbyClient::FetchThanks(masterUrl, 8000, raw);
+    if (got == coop::net::lobby::ThanksFetch::Unreachable) return;  // no word: keep what we have
+    List probe;
+    // The master answered. "No list" and a text the parser refuses both mean this master has
+    // nothing to show, and what it said before no longer stands.
+    if (got == coop::net::lobby::ThanksFetch::NoList || !Parse(raw.data(), raw.size(), probe))
+        raw.clear();
     {
         std::lock_guard<std::mutex> lk(g_mu);
-        g_list = std::move(l);
+        if (raw == g_masterRaw) return;  // the same word as last time: nothing to write, nothing to rebuild
+        g_masterRaw = raw;
     }
-    g_generation.fetch_add(1, std::memory_order_release);
+    if (raw.empty()) {
+        const std::wstring path = CachePath();
+        if (!path.empty()) ::DeleteFileW(path.c_str());
+        Settle("the master serves no list");
+    } else {
+        WriteCacheFor(masterUrl, raw);
+        Settle("the master's copy changed");
+    }
 }
 
 }  // namespace
@@ -188,7 +265,7 @@ bool Parse(const char* text, size_t size, List& out) {
     };
     while (pos < size) {
         size_t eol = pos;
-        while (eol < size && text[eol] != '\n') ++eol;
+        while (eol < size && text[eol] != '\n' && text[eol] != '\r') ++eol;  // any of LF, CRLF, CR
         const std::string line = Trim(std::string(text + pos, eol - pos));
         pos = eol + 1;
         if (line.empty() || line[0] == ';') continue;
@@ -204,8 +281,8 @@ bool Parse(const char* text, size_t size, List& out) {
             if (eq == std::string::npos) continue;
             const std::string key = Trim(line.substr(0, eq));
             const std::string val = Trim(line.substr(eq + 1));
-            if (key == "revision") l.revision = std::atoi(val.c_str());
-            else if (key == "title") l.title = Clean(val, kMaxTitleBytes);
+            if (key == "revision" && !ParseRevision(val, l.revision)) return false;
+            if (key == "title") l.title = Clean(val, kMaxTitleBytes);
             continue;
         }
         if (names >= kMaxNames) continue;
@@ -216,7 +293,6 @@ bool Parse(const char* text, size_t size, List& out) {
     }
     closeSection();
     if (l.sections.empty()) return false;
-    if (l.revision < 0) l.revision = 0;
     out = std::move(l);
     return true;
 }
@@ -225,21 +301,18 @@ void Init() {
     std::string raw;
     List embedded;
     if (EmbeddedBytes(raw) && Parse(raw.data(), raw.size(), embedded)) {
-        Adopt(std::move(embedded), "embedded");
+        std::lock_guard<std::mutex> lk(g_mu);
+        g_embedded = std::move(embedded);
     } else {
         UE_LOGE("thanks_list: the embedded list did not load -- the menu shows none until a "
                 "download lands");
     }
-    const std::wstring path = CachePath();
-    List cached;
-    if (path.empty() || !ReadFileBytes(path, raw) || !Parse(raw.data(), raw.size(), cached)) return;
-    bool wins;
-    {
+    std::string cached;
+    if (ReadCacheFor(coop::session_manager::MasterUrl(), cached)) {
         std::lock_guard<std::mutex> lk(g_mu);
-        wins = Wins(cached, g_list);
-        g_cachedRaw = raw;
+        g_masterRaw = std::move(cached);
     }
-    if (wins) Adopt(std::move(cached), "cached");
+    Settle("boot");
 }
 
 void RefreshFromMaster() {
@@ -250,35 +323,13 @@ void RefreshFromMaster() {
     g_fetchStartMs.store(now, std::memory_order_relaxed);
     const std::string masterUrl = coop::session_manager::MasterUrl();
     std::thread([masterUrl] {
+        // Everything is caught, the shape of every other master worker: an exception out of a
+        // detached thread is a terminate, and one that skipped the line below would leave the
+        // latch set and turn every later refresh into a no-op.
         try {
-            std::string raw;
-            List fetched;
-            if (!coop::shutdown::IsShuttingDown() &&
-                coop::net::lobby::LobbyClient::FetchThanks(masterUrl, 8000, raw) &&
-                Parse(raw.data(), raw.size(), fetched)) {
-                bool wins, changed;
-                {
-                    std::lock_guard<std::mutex> lk(g_mu);
-                    wins = Wins(fetched, g_list);
-                    changed = raw != g_cachedRaw;
-                }
-                if (!wins) {
-                    UE_LOGI("thanks_list: the master's copy is revision %d, older than ours -- kept",
-                            fetched.revision);
-                } else if (changed) {
-                    const std::wstring path = CachePath();
-                    if (path.empty() || !WriteFileBytes(path, raw))
-                        UE_LOGW("thanks_list: the downloaded list could not be cached; it lasts "
-                                "this run only");
-                    {
-                        std::lock_guard<std::mutex> lk(g_mu);
-                        g_cachedRaw = raw;
-                    }
-                    Adopt(std::move(fetched), "master's");
-                }
-            }
-        } catch (const std::exception& e) {
-            UE_LOGW("thanks_list: fetch worker exception: %s", e.what());
+            FetchOnce(masterUrl);
+        } catch (...) {
+            UE_LOGW("thanks_list: the fetch worker threw; the list stays as it was");
         }
         g_fetchInFlight.store(false, std::memory_order_release);
     }).detach();
@@ -288,7 +339,7 @@ uint64_t Generation() { return g_generation.load(std::memory_order_acquire); }
 
 uint64_t Copy(List& out) {
     std::lock_guard<std::mutex> lk(g_mu);
-    out = g_list;
+    out = g_shown;
     return g_generation.load(std::memory_order_acquire);
 }
 

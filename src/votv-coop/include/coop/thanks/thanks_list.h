@@ -6,9 +6,11 @@
 // that this one has a real fallback, is cached beside the executable, and is fetched only where
 // the mod already talks to its master, never from the title screen alone.
 //
-// Three copies can exist: embedded, cached, just fetched. The highest `revision` wins, and at
-// equal revisions the later source does (fetched over cached over embedded), so a master holding
-// an old file cannot take names away from a newer build. The format is in the data file's header.
+// Two copies are weighed: the build's, and what the master last said. The higher `revision` wins
+// and the master takes a tie, so a master holding an old file cannot take names away from a newer
+// build. The cache is only a memo of the master's last word: it names the master it came from, a
+// new answer replaces it whatever its revision, and "no list" erases it, so a copy a master once
+// served never outlives that master's say. The format is in the data file's header.
 
 #pragma once
 
@@ -33,15 +35,18 @@ struct List {
 };
 
 // Parses one copy of the file. Text from the master is untrusted: the size, the section count
-// and the name count are capped, a name that is not well-formed UTF-8 is dropped whole, control
-// characters are stripped. False when nothing displayable came out, `out` then untouched. Pure.
+// and the name count are capped, a name that is not well-formed UTF-8 is dropped whole, and
+// controls, line separators and the invisible and bidi-override codepoints are taken out of what
+// is kept. False when nothing displayable came out or the revision is unreadable, `out` then
+// untouched. Pure.
 bool Parse(const char* text, size_t size, List& out);
 
-// Loads the embedded copy and the cached one and keeps the winner. Once, at boot, any thread.
+// Loads the build's copy and this master's cached word and settles what is shown. Once, at
+// boot, after the master's address is configured; any thread.
 void Init();
 
-// Fetches the master's copy on a worker and, if it wins, adopts and caches it. Coalesced and
-// rate-floored like the version check it rides with; silent when the master has no list.
+// Asks the master on a worker, records its answer as the cache, and settles again. Coalesced and
+// rate-floored like the version check it rides with; an unreachable master changes nothing.
 void RefreshFromMaster();
 
 // The current list, and a counter that moves when it is replaced, so a consumer rebuilds on a

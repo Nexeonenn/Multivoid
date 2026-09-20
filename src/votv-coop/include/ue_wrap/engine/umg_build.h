@@ -77,6 +77,10 @@ bool SetImageTintRaw(void* image, const FLinearColor& tint);
 bool SetSizeBoxHeight(void* sizeBox, float height);
 bool SetSizeBoxWidth(void* sizeBox, float width);
 
+// USizeBox::SetMaxDesiredWidth: the box is as wide as its content asks, up to this. For a panel
+// that should hug what it holds and still never grow past a bound.
+bool SetSizeBoxMaxWidth(void* sizeBox, float width);
+
 // Style a freshly spawned UTextBlock as one of the game's own menu labels: its UI font at the
 // given size, the colour with the slate colour rule forced to specified, no outline, and the
 // native drop shadow (the constants the button inject sets, which clones no donor text style,

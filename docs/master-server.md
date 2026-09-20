@@ -34,8 +34,9 @@ TURN server checks. The master also answers the update check with the latest rel
 no released record it answers nothing, and the client stays silent. And it serves the thanks
 list the main menu rolls ([ui.md](ui.md)): the text of one file on the box, named by
 `COOP_THANKS_FILE` and re-read at most every thirty seconds, so publishing a name is copying a
-file, with no restart. A missing, empty, oversized or non-UTF-8 file answers 404 and the client
-keeps the copy it has.
+file, with no restart. A missing, empty, oversized or non-UTF-8 file answers 404, which the
+client reads as "this master serves no list": it drops what this master said before and shows
+the copy in its build. The disk is read off the runtime's threads and outside the cache's lock.
 
 The master never sees game traffic. Its posture is the ordinary one for a public endpoint:
 per-address and per-class rate limits, a global and a per-address lobby cap, an opaque lobby id
