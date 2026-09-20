@@ -10,6 +10,7 @@
 #include "coop/net/link_kind.h"            // how a player's traffic reaches the session
 #include "coop/net/net_stats.h"            // session traffic accounting (the one counter owner)
 #include "coop/net/protocol.h"
+#include "coop/net/send_admission.h"       // the send buffer's headroom rule
 #include "coop/net/send_backlog.h"         // the reliable-send delivery guarantee
 #include "coop/net/send_rate_control.h"    // what each peer's link measures out at
 #include "coop/player/players_registry.h"  // kMaxPeers (host + 3 clients = 4)
@@ -757,13 +758,14 @@ private:
     std::atomic<uint32_t> sendSeq_{0};
 
     // Per-(slot, lane) send backlogs (send_backlog.h), drained each net-thread pass and freed
-    // wherever peerConns_ is zeroed. sendBufBytes_ mirrors the configured per-connection
-    // SendBufferSize; the drain's reserve gate is computed against it.
+    // wherever peerConns_ is zeroed.
     SendBacklog backlog_;
+    // The headroom rule every reliable path obeys, and the send-buffer size it measures against:
+    // re-anchored per slot at each link sample, fed by every byte handed to a connection.
+    SendAdmission admission_;
     // The link measurement: goodput per slot from our own queued-byte count against GNS's pending
     // totals, and a round trip timed with the LinkProbe pair.
     SendRateControl rateControl_;
-    int sendBufBytes_ = 512 * 1024;
     // The fatal-backlog close: Kick(slot) on the host; on a client, claim plus the KickClaimed
     // teardown of the host connection. Net thread.
     void FatalCloseSlot(int slot, const char* reason);

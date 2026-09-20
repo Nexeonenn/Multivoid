@@ -37,17 +37,6 @@ int64_t AttemptSend_(uint32_t hConn, int lane, const uint8_t* wire, int len) {
     return outMsgNum;
 }
 
-// The connection's TOTAL pending bytes (reliable + unreliable) -- the exact
-// sum GNS's enqueue check compares against SendBufferSize
-// (steamnetworkingsockets_snp.cpp:320, PendingBytesTotal()). Fresh read.
-int PendingBytesTotal_(uint32_t hConn) {
-    auto* sockets = SteamNetworkingSockets();
-    if (!sockets) return 0;
-    SteamNetConnectionRealTimeStatus_t st{};
-    if (sockets->GetConnectionRealTimeStatus(hConn, &st, 0, nullptr) != k_EResultOK) return 0;
-    return st.m_cbPendingReliable + st.m_cbPendingUnreliable;
-}
-
 }  // namespace
 
 void SendBacklog::ResetLocked_(SlotQ& s) {
@@ -63,7 +52,7 @@ void SendBacklog::ResetLocked_(SlotQ& s) {
 }
 
 SendOutcome SendBacklog::SendOrQueue(int slot, int lane, uint32_t hConn,
-                                     const uint8_t* wire, int len) {
+                                     const uint8_t* wire, int len, SendAdmission& adm) {
     if (slot < 0 || slot >= static_cast<int>(coop::players::kMaxPeers))
         return SendOutcome::Dropped;
     if (lane < 0 || lane >= kLaneCount || !wire || len <= 0 || hConn == 0)
@@ -79,28 +68,43 @@ SendOutcome SendBacklog::SendOrQueue(int slot, int lane, uint32_t hConn,
         ResetLocked_(s);
     }
     LaneQ& l = s.lanes[lane];
+    // Which of the two brims turned this packet back, for the episode line: our own reserve, or
+    // the transport's buffer. They are not the same event -- the transport can pass its own limit
+    // from the outside, by re-queueing a NACKed segment into pending.
+    const char* why = "the lane is already queueing";
     if (l.q.empty()) {
-        // Fast path: nothing queued on this lane -> attempt directly. Holding
-        // s.mu across the attempt is the FIFO-once-nonempty guarantee: a
-        // concurrent producer cannot slip a packet into the stream between our
-        // refusal and our append.
-        const int64_t rc = AttemptSend_(hConn, lane, wire, len);
-        if (rc >= 0) return SendOutcome::Streamed;
-        if (rc != -k_EResultLimitExceeded) {
-            // Dying/dead connection (NoConnection / InvalidState) or our own
-            // bug (InvalidParam). Never queued: the slot's teardown owns the
-            // cleanup; state for a gone peer dies with the peer. Logged once
-            // per connection (the window before the status callback tears the
-            // slot down can see many sends).
-            if (!s.dyingLogged) {
-                s.dyingLogged = true;
-                UE_LOGW("send_backlog: slot %d lane %d send refused fatally rc=%lld -- "
-                        "connection dying (not queued; further lines folded)",
-                        slot, lane, static_cast<long long>(rc));
+        // Fast path: nothing queued on this lane -> attempt directly, unless the headroom rule
+        // holds this packet short of the reserve, in which case it queues exactly as a refused
+        // one would and departs when the buffer has room again. Holding s.mu across the attempt
+        // is the FIFO-once-nonempty guarantee: a concurrent producer cannot slip a packet into
+        // the stream between our refusal and our append.
+        if (!adm.Admits(slot, len)) {
+            adm.NoteRefused(slot);
+            why = "no room above the headroom reserve";
+        } else {
+            const int64_t rc = AttemptSend_(hConn, lane, wire, len);
+            if (rc >= 0) {
+                adm.NoteHanded(slot, len);
+                return SendOutcome::Streamed;
             }
-            return SendOutcome::Dropped;
+            if (rc != -k_EResultLimitExceeded) {
+                // Dying/dead connection (NoConnection / InvalidState) or our own
+                // bug (InvalidParam). Never queued: the slot's teardown owns the
+                // cleanup; state for a gone peer dies with the peer. Logged once
+                // per connection (the window before the status callback tears the
+                // slot down can see many sends).
+                if (!s.dyingLogged) {
+                    s.dyingLogged = true;
+                    UE_LOGW("send_backlog: slot %d lane %d send refused fatally rc=%lld -- "
+                            "connection dying (not queued; further lines folded)",
+                            slot, lane, static_cast<long long>(rc));
+                }
+                return SendOutcome::Dropped;
+            }
+            // -LimitExceeded: backpressure from the transport's own buffer, which our reserve had
+            // said there was room above. Fall through to queue.
+            why = "the transport's send buffer is full";
         }
-        // -LimitExceeded: backpressure. Fall through to queue.
     }
     // Queue behind whatever is already pending on this (slot,lane).
     if (s.totalBytes + static_cast<size_t>(len) > kMaxBytesPerSlot) {
@@ -115,8 +119,8 @@ SendOutcome SendBacklog::SendOrQueue(int slot, int lane, uint32_t hConn,
         s.episodeQueued = 0;
         s.episodePeakBytes = 0;
         s.lastProgress = std::chrono::steady_clock::now();
-        UE_LOGI("send_backlog: EPISODE OPEN slot %d lane %d (send buffer full -- queueing, "
-                "delivery guaranteed)", slot, lane);
+        UE_LOGI("send_backlog: EPISODE OPEN slot %d lane %d (%s -- queueing, delivery guaranteed)",
+                slot, lane, why);
     }
     s.hConn = hConn;
     l.q.emplace_back(wire, wire + len);
@@ -127,7 +131,7 @@ SendOutcome SendBacklog::SendOrQueue(int slot, int lane, uint32_t hConn,
     return SendOutcome::Queued;
 }
 
-int SendBacklog::Drain(int slot, uint32_t hConn, int sendBufBytes) {
+int SendBacklog::Drain(int slot, uint32_t hConn, SendAdmission& adm) {
     if (slot < 0 || slot >= static_cast<int>(coop::players::kMaxPeers)) return 0;
     SlotQ& s = slots_[slot];
     std::lock_guard<std::mutex> lk(s.mu);
@@ -140,10 +144,9 @@ int SendBacklog::Drain(int slot, uint32_t hConn, int sendBufBytes) {
         ResetLocked_(s);
         return 0;
     }
-    // Reserve: stop refilling once pending crosses sendBufBytes - kReserve, keeping headroom
-    // for the UnreliableNoDelay pose and voice streams. The rc below remains the correctness
-    // backstop -- this read is a fairness gate.
-    int pending = PendingBytesTotal_(hConn);
+    // The refill stops at the headroom rule, keeping a slice free for the UnreliableNoDelay pose
+    // and voice streams. The rc below remains the correctness backstop -- the rule is a fairness
+    // gate, and a head it holds back stays queued rather than counting as a send refusal.
     int streamed = 0;
     bool progressed = false;
     bool blocked = false;
@@ -154,7 +157,7 @@ int SendBacklog::Drain(int slot, uint32_t hConn, int sendBufBytes) {
             if (sentThisPass >= kDrainPassCap) { blocked = true; break; }
             const std::vector<uint8_t>& head = l.q.front();
             const int len = static_cast<int>(head.size());
-            if (pending + len > sendBufBytes - kReserve) { blocked = true; break; }
+            if (!adm.Admits(slot, len)) { blocked = true; break; }
             const int64_t rc = AttemptSend_(hConn, lane, head.data(), len);
             if (rc < 0) {
                 if (rc != -k_EResultLimitExceeded && !s.dyingLogged) {
@@ -166,7 +169,7 @@ int SendBacklog::Drain(int slot, uint32_t hConn, int sendBufBytes) {
                 blocked = true;
                 break;
             }
-            pending += len;
+            adm.NoteHanded(slot, len);
             streamed += len;
             l.bytes -= static_cast<size_t>(len);
             s.totalBytes -= static_cast<size_t>(len);

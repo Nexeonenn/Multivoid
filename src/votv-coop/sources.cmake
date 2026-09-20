@@ -300,6 +300,7 @@ set(VOTVCOOP_SOURCES
     src/coop/net/session_status.cpp
     src/coop/net/link_kind.cpp
     src/coop/net/session_relay.cpp
+    src/coop/net/send_admission.cpp
     src/coop/net/send_backlog.cpp
     src/coop/net/send_rate_control.cpp
     src/coop/net/ice_config.cpp

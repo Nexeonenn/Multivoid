@@ -47,6 +47,10 @@ bool Session::SendVoiceFrame(const VoiceFramePayload& frame) {
         sockets->SendMessages(1, &msg, &outMsgNum, /*bDeleteFailedMessages*/true);
         if (outMsgNum >= 0) {
             net_stats::AddSent(static_cast<uint32_t>(total));
+            // Voice is the one unreliable stream sent off the net thread, so it is also the only
+            // one that can fill a connection between two anchors; counting it keeps the headroom
+            // estimate from reading low.
+            admission_.NoteHanded(i, total);
             anySuccess = true;
         }
     }

@@ -104,6 +104,7 @@ bool Session::Start(const Config& cfg) {
     cfg_ = cfg;
     net_stats::ResetSession();  // a new session's traffic totals start at zero
     rateControl_.Reset();       // and its per-link measurements
+    admission_.Reset();         // and every slot's send-buffer occupancy
 
     // This peer's per-process session epoch, minted non-zero (0 is the receiver's "not yet latched"
     // sentinel) from a random device, so it is unpredictable off-path and differs between the
@@ -414,6 +415,7 @@ void Session::Stop() {
             peerGenBySlot_[i].store(0, std::memory_order_release);
             backlog_.FreeSlot(i);      // queued state dies with the session
             rateControl_.FreeSlot(i);  // and so do its byte counters, or the next link starts in debt
+            admission_.FreeSlot(i);    // and the occupancy estimate, for the same reason
             relayEligible_[i].store(0, std::memory_order_release);
             if (hConn != 0) {
                 // The code names who stopped: a host ending the session, or a client leaving

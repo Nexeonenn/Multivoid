@@ -51,7 +51,12 @@ void Session::RelayUnreliableToOtherClients(int originSlot, const void* data, in
         if (!IsSlotWorldReady(i)) continue;
         const EResult rc = sockets->SendMessageToConnection(
             hConn, buf, len, k_nSteamNetworkingSend_UnreliableNoDelay, nullptr);
-        if (rc == k_EResultOK) net_stats::AddSent(static_cast<uint32_t>(len));
+        if (rc == k_EResultOK) {
+            net_stats::AddSent(static_cast<uint32_t>(len));
+            // The relay fills OTHER peers' send buffers, so it is a producer the headroom
+            // estimate has to see, exactly like the direct fan-out beside it.
+            admission_.NoteHanded(i, len);
+        }
     }
 }
 
@@ -93,7 +98,7 @@ void Session::RelayReliableToOtherClients(int originSlot, ReliableKind kind,
         h->senderEpoch = ownEpoch_;
         h->senderSlot = static_cast<uint8_t>(originSlot);
         coop::net::WriteStateTimeMs24(*h, 0);  // the origin's state time is not the relayer's -- scrub (no client-side reader)
-        if (backlog_.SendOrQueue(i, laneIdx, hConn, wire, len) == SendOutcome::Streamed)
+        if (backlog_.SendOrQueue(i, laneIdx, hConn, wire, len, admission_) == SendOutcome::Streamed)
             rateControl_.NoteReliableQueued(i, len);
     }
 }

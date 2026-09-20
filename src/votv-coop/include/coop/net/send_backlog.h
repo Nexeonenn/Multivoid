@@ -16,6 +16,7 @@
 
 #pragma once
 
+#include "coop/net/send_admission.h"       // the send buffer's headroom rule, one for every path
 #include "coop/player/players_registry.h"  // kMaxPeers
 
 #include <atomic>
@@ -60,17 +61,19 @@ public:
     // be delivered; Dropped means it never will, because the connection refused it
     // fatally (dying/dead -- teardown owns cleanup) or the args were invalid, and
     // callers treat it exactly like today's dead-slot false.
+    // `adm` is the headroom rule: a packet it refuses queues here instead of entering the buffer,
+    // which changes when a packet departs and never whether it does.
     // Any thread. `hConn` is the slot's CURRENT connection handle.
-    SendOutcome SendOrQueue(int slot, int lane, uint32_t hConn, const uint8_t* wire, int len);
+    SendOutcome SendOrQueue(int slot, int lane, uint32_t hConn, const uint8_t* wire, int len,
+                            SendAdmission& adm);
 
     // One drain pass for a slot (net-thread tick). Re-attempts queued heads in lane-priority
-    // order (High -> Normal -> Bulk); the GNS rc is the headroom read, so a refusal ends the
-    // pass. `reserveGate`: the pass stops refilling once the connection's pending bytes
-    // (reliable plus unreliable, the exact sum GNS's own enqueue check uses) exceed
-    // sendBufBytes - kReserve, so the UnreliableNoDelay pose and voice streams keep flowing
-    // through a drain episode instead of being starved for its whole length. Returns the bytes this
-    // pass handed to GNS, which is the share of a slot's delivery the backlog accounts for.
-    int Drain(int slot, uint32_t hConn, int sendBufBytes);
+    // order (High -> Normal -> Bulk); the GNS rc is the correctness backstop, so a refusal ends
+    // the pass. The refill stops at the same headroom rule every send path obeys, so the
+    // UnreliableNoDelay pose and voice streams keep flowing through a drain episode instead of
+    // being starved for its whole length. Returns the bytes this pass handed to GNS, which is the
+    // share of a slot's delivery the backlog accounts for.
+    int Drain(int slot, uint32_t hConn, SendAdmission& adm);
 
     // True when the slot's backlog has tripped a fatal bound (no-progress or byte cap). Sets
     // `reason` to a static string. The caller on the net thread kicks or closes; this class
@@ -83,11 +86,6 @@ public:
 
     // net-diag: total queued bytes across the slot's lanes (0 = idle).
     size_t DepthBytes(int slot);
-
-    // Headroom kept free for the unreliable streams during a drain episode.
-    // Worst realistic concurrent unreliable is ~1.2 KB per 16 ms tick
-    // (3 peers x 228 B voice frames + poses) -- 64 KB is ~30x margin.
-    static constexpr int kReserve = 64 * 1024;
 
     // Max messages one Drain() pass re-injects: bounds the per-slot mutex hold, and so the
     // cross-lane wait, to sub-millisecond; the next net-thread pass continues. 256 messages at

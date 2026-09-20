@@ -516,6 +516,15 @@ void Session::SendStreamsTick(std::chrono::steady_clock::time_point now,
             for (int i = 0; i < kMaxPeers; ++i) {
                 const uint32_t hConn = peerConns_[i].load();
                 if (hConn == 0) continue;
+                // One accounting for every datagram of this round: the session's traffic total,
+                // the occupancy the headroom rule reads, and the rejection count the per-second
+                // diagnostics report. These are the sends the reserve exists to protect, so they
+                // are never gated -- they are only counted.
+                auto noteSent = [&](EResult rc, int bytes) {
+                    if (rc != k_EResultOK) { ++sendFails; return; }
+                    net_stats::AddSent(static_cast<uint32_t>(bytes));
+                    admission_.NoteHanded(i, bytes);
+                };
                 if (have) {
                     PosePacket pkt{};
                     WriteHeader(pkt.header, MsgType::PoseSnapshot,
@@ -529,7 +538,7 @@ void Session::SendStreamsTick(std::chrono::steady_clock::time_point now,
                     const EResult rc = sockets->SendMessageToConnection(
                         hConn, &pkt, sizeof(pkt),
                         k_nSteamNetworkingSend_UnreliableNoDelay, nullptr);
-                    if (rc == k_EResultOK) net_stats::AddSent(sizeof(pkt)); else ++sendFails;
+                    noteSent(rc, static_cast<int>(sizeof(pkt)));
                 }
                 if (haveProp) {
                     PropPosePacket pkt{};
@@ -539,7 +548,7 @@ void Session::SendStreamsTick(std::chrono::steady_clock::time_point now,
                     const EResult rc = sockets->SendMessageToConnection(
                         hConn, &pkt, sizeof(pkt),
                         k_nSteamNetworkingSend_UnreliableNoDelay, nullptr);
-                    if (rc == k_EResultOK) net_stats::AddSent(sizeof(pkt)); else ++sendFails;
+                    noteSent(rc, static_cast<int>(sizeof(pkt)));
                 }
                 if (haveRagdoll) {
                     RagdollPosePacket pkt{};
@@ -549,7 +558,7 @@ void Session::SendStreamsTick(std::chrono::steady_clock::time_point now,
                     const EResult rc = sockets->SendMessageToConnection(
                         hConn, &pkt, sizeof(pkt),
                         k_nSteamNetworkingSend_UnreliableNoDelay, nullptr);
-                    if (rc == k_EResultOK) net_stats::AddSent(sizeof(pkt)); else ++sendFails;
+                    noteSent(rc, static_cast<int>(sizeof(pkt)));
                 }
                 if (haveHand) {  // hand-item view-relative transform (while holding)
                     HandPosePacket pkt{};
@@ -559,7 +568,7 @@ void Session::SendStreamsTick(std::chrono::steady_clock::time_point now,
                     const EResult rc = sockets->SendMessageToConnection(
                         hConn, &pkt, sizeof(pkt),
                         k_nSteamNetworkingSend_UnreliableNoDelay, nullptr);
-                    if (rc == k_EResultOK) net_stats::AddSent(sizeof(pkt)); else ++sendFails;
+                    noteSent(rc, static_cast<int>(sizeof(pkt)));
                 }
                 if (haveDeskCursor) {  // coords-panel live cursor (while desk-claimed + moving)
                     DeskCursorPosePacket pkt{};
@@ -569,7 +578,7 @@ void Session::SendStreamsTick(std::chrono::steady_clock::time_point now,
                     const EResult rc = sockets->SendMessageToConnection(
                         hConn, &pkt, sizeof(pkt),
                         k_nSteamNetworkingSend_UnreliableNoDelay, nullptr);
-                    if (rc == k_EResultOK) net_stats::AddSent(sizeof(pkt)); else ++sendFails;
+                    noteSent(rc, static_cast<int>(sizeof(pkt)));
                 }
                 if (npcMsgLen > 0) {  // NPC pose batch -- body built once above; stamp the header per-peer
                     PacketHeader npcHdr{};  // build + memcpy (npcBuf is uint8_t[]; no misaligned PacketHeader lvalue)
@@ -578,7 +587,7 @@ void Session::SendStreamsTick(std::chrono::steady_clock::time_point now,
                     const EResult rc = sockets->SendMessageToConnection(
                         hConn, npcBuf, static_cast<uint32_t>(npcMsgLen),
                         k_nSteamNetworkingSend_UnreliableNoDelay, nullptr);
-                    if (rc == k_EResultOK) net_stats::AddSent(static_cast<uint32_t>(npcMsgLen)); else ++sendFails;
+                    noteSent(rc, static_cast<int>(static_cast<uint32_t>(npcMsgLen)));
                 }
                 if (waMsgLen > 0) {  // WorldActor pose batch -- body built once above; stamp the header
                                      // per-peer
@@ -588,7 +597,7 @@ void Session::SendStreamsTick(std::chrono::steady_clock::time_point now,
                     const EResult rc = sockets->SendMessageToConnection(
                         hConn, waBuf, static_cast<uint32_t>(waMsgLen),
                         k_nSteamNetworkingSend_UnreliableNoDelay, nullptr);
-                    if (rc == k_EResultOK) net_stats::AddSent(static_cast<uint32_t>(waMsgLen)); else ++sendFails;
+                    noteSent(rc, static_cast<int>(static_cast<uint32_t>(waMsgLen)));
                 }
                 if (tcMsgLen > 0) {  // trash-clump carry batch -- body built once above; stamp per-peer
                     PacketHeader tcHdr{};
@@ -597,7 +606,7 @@ void Session::SendStreamsTick(std::chrono::steady_clock::time_point now,
                     const EResult rc = sockets->SendMessageToConnection(
                         hConn, tcBuf, static_cast<uint32_t>(tcMsgLen),
                         k_nSteamNetworkingSend_UnreliableNoDelay, nullptr);
-                    if (rc == k_EResultOK) net_stats::AddSent(static_cast<uint32_t>(tcMsgLen)); else ++sendFails;
+                    noteSent(rc, static_cast<int>(static_cast<uint32_t>(tcMsgLen)));
                 }
                 if (pdMsgLen > 0) {  // driven-prop batch -- body built once above; stamp per-peer
                     PacketHeader pdHdr{};
@@ -606,7 +615,7 @@ void Session::SendStreamsTick(std::chrono::steady_clock::time_point now,
                     const EResult rc = sockets->SendMessageToConnection(
                         hConn, pdBuf, static_cast<uint32_t>(pdMsgLen),
                         k_nSteamNetworkingSend_UnreliableNoDelay, nullptr);
-                    if (rc == k_EResultOK) net_stats::AddSent(static_cast<uint32_t>(pdMsgLen)); else ++sendFails;
+                    noteSent(rc, static_cast<int>(static_cast<uint32_t>(pdMsgLen)));
                 }
                 if (clockDue) {  // HOST world-clock snapshot -- same body to every peer
                     ClockPosePacket pkt{};
@@ -615,7 +624,7 @@ void Session::SendStreamsTick(std::chrono::steady_clock::time_point now,
                     const EResult rc = sockets->SendMessageToConnection(
                         hConn, &pkt, sizeof(pkt),
                         k_nSteamNetworkingSend_UnreliableNoDelay, nullptr);
-                    if (rc == k_EResultOK) net_stats::AddSent(sizeof(pkt)); else ++sendFails;
+                    noteSent(rc, static_cast<int>(sizeof(pkt)));
                 }
                 if (deskSimDue) {  // HOST download-sim output vector -- same body to every peer
                     DeskSimPosePacket pkt{};
@@ -624,7 +633,7 @@ void Session::SendStreamsTick(std::chrono::steady_clock::time_point now,
                     const EResult rc = sockets->SendMessageToConnection(
                         hConn, &pkt, sizeof(pkt),
                         k_nSteamNetworkingSend_UnreliableNoDelay, nullptr);
-                    if (rc == k_EResultOK) net_stats::AddSent(sizeof(pkt)); else ++sendFails;
+                    noteSent(rc, static_cast<int>(sizeof(pkt)));
                 }
                 if (dishPoseDue) {  // HOST dish-pose batch -- same body to every peer
                     DishPosePacket pkt{};
@@ -633,7 +642,7 @@ void Session::SendStreamsTick(std::chrono::steady_clock::time_point now,
                     const EResult rc = sockets->SendMessageToConnection(
                         hConn, &pkt, sizeof(pkt),
                         k_nSteamNetworkingSend_UnreliableNoDelay, nullptr);
-                    if (rc == k_EResultOK) net_stats::AddSent(sizeof(pkt)); else ++sendFails;
+                    noteSent(rc, static_cast<int>(sizeof(pkt)));
                 }
                 if (reelPoseDue) {  // HOST reel corrector -- same body to every peer
                     ReelPosePacket pkt{};
@@ -642,7 +651,7 @@ void Session::SendStreamsTick(std::chrono::steady_clock::time_point now,
                     const EResult rc = sockets->SendMessageToConnection(
                         hConn, &pkt, sizeof(pkt),
                         k_nSteamNetworkingSend_UnreliableNoDelay, nullptr);
-                    if (rc == k_EResultOK) net_stats::AddSent(sizeof(pkt)); else ++sendFails;
+                    noteSent(rc, static_cast<int>(sizeof(pkt)));
                 }
             }
         }

@@ -99,7 +99,7 @@ bool Session::SendReliableToSlot(int peerSlot, ReliableKind kind, const void* pa
     // cleanup). See send_backlog.h. Only the bytes GNS took are the rate measurement's input --
     // what the backlog holds is counted when a drain pass hands it over.
     const SendOutcome rc = backlog_.SendOrQueue(peerSlot, static_cast<int>(LaneForKind(kind)),
-                                               hConn, wire, total);
+                                               hConn, wire, total, admission_);
     if (rc == SendOutcome::Streamed) rateControl_.NoteReliableQueued(peerSlot, total);
     return rc != SendOutcome::Dropped;
 }
@@ -121,6 +121,15 @@ bool Session::TrySendReliableToSlot(int peerSlot, ReliableKind kind, const void*
     if (hConn == 0) return false;
 
     const int total = static_cast<int>(sizeof(PacketHeader) + sizeof(ReliableHeader)) + len;
+    // This path skips the backlog, so the headroom rule is the only thing between a bulk stream
+    // and a buffer with no room left for the realtime lane. The probe pair is the one exemption:
+    // it is 32 bytes, and it is the measurement the reserve is being kept for, so refusing it
+    // would make the reserve invisible exactly where it matters. The save pump reads a false as
+    // the pacing signal it already reads a full buffer as, and retries on its next tick.
+    if (!IsReserveExemptKind(kind) && !admission_.Admits(peerSlot, total)) {
+        admission_.NoteRefused(peerSlot);
+        return false;
+    }
     const uint32_t seq = sendSeq_.fetch_add(1);
     const int laneIdx = static_cast<int>(LaneForKind(kind));
 
@@ -146,10 +155,14 @@ bool Session::TrySendReliableToSlot(int peerSlot, ReliableKind kind, const void*
         return false;
     }
     net_stats::AddSent(static_cast<uint32_t>(total));
+    admission_.NoteHanded(peerSlot, total);
     rateControl_.NoteReliableQueued(peerSlot, total);
     return true;
 }
 
+// The admission exchange, before any slot exists. Deliberately outside the headroom rule, which is
+// per slot: these three kinds run on a connection whose buffer is empty by construction, and there
+// is no slot to measure one against.
 bool Session::SendRawReliableToConn(uint32_t hConn, ReliableKind kind,
                                     const void* payload, int len) {
     if (hConn == 0 || len < 0 || len > kMaxReliablePayload) return false;
@@ -201,7 +214,7 @@ bool Session::SendReliable(ReliableKind kind, const void* payload, int len) {
         // The pre-world gate, per slot (SendReliableToSlot's rule).
         if (!IsSlotWorldReady(i) && !IsPreWorldSendableKind(kind)) continue;
         // Delivery per slot: the stream or the backlog counts as sent.
-        const SendOutcome rc = backlog_.SendOrQueue(i, laneIdx, hConn, wire, total);
+        const SendOutcome rc = backlog_.SendOrQueue(i, laneIdx, hConn, wire, total, admission_);
         if (rc == SendOutcome::Streamed) rateControl_.NoteReliableQueued(i, total);
         if (rc != SendOutcome::Dropped) anySuccess = true;
     }
@@ -248,8 +261,17 @@ void Session::SampleLinkRates(uint64_t nowMs) {
     for (int i = 0; i < kMaxPeers; ++i) {
         const uint32_t hConn = peerConns_[i].load();
         if (hConn == 0) continue;
+        // One status read feeds both consumers. The anchor wraps it because the order matters:
+        // the headroom estimate latches our own handed count before the transport's pending
+        // total, so a send between the two reads high rather than disappearing.
         SteamNetConnectionRealTimeStatus_t st{};
-        if (sockets->GetConnectionRealTimeStatus(hConn, &st, 0, nullptr) != k_EResultOK) continue;
+        bool haveStatus = false;
+        admission_.Anchor(i, [&]() -> int {
+            haveStatus =
+                sockets->GetConnectionRealTimeStatus(hConn, &st, 0, nullptr) == k_EResultOK;
+            return haveStatus ? st.m_cbPendingReliable + st.m_cbPendingUnreliable : -1;
+        });
+        if (!haveStatus) continue;
         ++links;
         SendRateControl::LinkSample in{};
         in.pendingReliable     = st.m_cbPendingReliable;
@@ -422,7 +444,7 @@ void Session::NetThread() {
         for (int i = 0; i < kMaxPeers; ++i) {
             const uint32_t hConn = peerConns_[i].load();
             if (hConn == 0) continue;
-            const int streamed = backlog_.Drain(i, hConn, sendBufBytes_);
+            const int streamed = backlog_.Drain(i, hConn, admission_);
             if (streamed > 0) rateControl_.NoteReliableQueued(i, streamed);
             const char* fatalReason = nullptr;
             if (backlog_.CheckFatal(i, &fatalReason)) FatalCloseSlot(i, fatalReason);
@@ -456,6 +478,9 @@ void Session::NetThread() {
             for (int i = 0; i < kMaxPeers; ++i) {
                 const uint32_t hConn = peerConns_[i].load();
                 if (hConn == 0) { rttMsBySlot_[i].store(-1, std::memory_order_relaxed); continue; }
+                // Drained before the status read can fail: the counter is per-second by contract,
+                // and leaving it to the next pass would print two seconds under a one-second name.
+                const uint32_t headroomHeld = admission_.TakeRefusals(i);
                 SteamNetConnectionRealTimeStatus_t st{};
                 if (sockets->GetConnectionRealTimeStatus(hConn, &st, 0, nullptr) != k_EResultOK) continue;
                 sumInBps    += st.m_flInBytesPerSec;
@@ -475,12 +500,13 @@ void Session::NetThread() {
                                       std::memory_order_relaxed);
                 UE_LOGI("net-diag[slot %d]: ping=%dms qual=%.0f/%.0f%% in=%.0f out=%.0f pkt/s "
                         "sendRate=%dB/s pendRel=%dB pendUnrel=%dB unacked=%dB queue=%lldms "
-                        "backlog=%zuB",
+                        "backlog=%zuB headroomHeld=%u",
                         i, st.m_nPing, st.m_flConnectionQualityLocal * 100.f,
                         st.m_flConnectionQualityRemote * 100.f, st.m_flInPacketsPerSec,
                         st.m_flOutPacketsPerSec, st.m_nSendRateBytesPerSecond,
                         st.m_cbPendingReliable, st.m_cbPendingUnreliable,
-                        st.m_cbSentUnackedReliable, queueMs, backlog_.DepthBytes(i));
+                        st.m_cbSentUnackedReliable, queueMs, backlog_.DepthBytes(i),
+                        headroomHeld);
                 if (st.m_nPing > kHighPingMs)
                     UE_LOGW("net-diag[slot %d]: HIGH PING %d ms (> %d) -- the link/relay is slow",
                             i, st.m_nPing, kHighPingMs);

@@ -28,6 +28,15 @@ inline bool IsAdmissionKind(ReliableKind k) {
            k == ReliableKind::AuthProof;
 }
 
+// The reliable kinds exempt from the send buffer's headroom reserve. That reserve exists to keep
+// the unreliable pose and voice datagrams flowing while a bulk stream holds the buffer, and the
+// link probe is the measurement of the round trip those datagrams take: holding it back would
+// blind the one instrument that can see the reserve working. Bounded by construction -- 32 bytes,
+// a bounded number outstanding -- so what it takes from the reserve is not worth counting.
+inline bool IsReserveExemptKind(ReliableKind k) {
+    return k == ReliableKind::LinkProbe || k == ReliableKind::LinkProbeReply;
+}
+
 inline Lane LaneForKind(ReliableKind k) {
     switch (k) {
     // The link probe and its echo ride High because that is the lane whose delay the measurement

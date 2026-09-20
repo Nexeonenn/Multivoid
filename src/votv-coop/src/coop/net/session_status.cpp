@@ -24,7 +24,7 @@
 namespace coop::net {
 
 // The per-connection send buffer configured when the net.sendbuf_kb knob is 0; one constant,
-// shared with the sendBufBytes_ mirror.
+// handed to SendAdmission::SetSendBufBytes so the headroom rule measures against the real size.
 constexpr int kDefaultSendBufBytes = 4 * 1024 * 1024;
 
 namespace {
@@ -377,13 +377,13 @@ int Session::pendingPeerCount() const {
 // that callback once admitted a peer without ever sending AssignPeerSlot.
 void Session::FinishPeerConnected(int slot, uint32_t hConn) {
     ConfigureLanesForPeer(hConn);
-    // Mirror the buffer size the connection runs with (the knob or the default); the backlog
-    // drain's reserve gate is computed against it.
+    // Mirror the buffer size the connection runs with (the knob or the default); the headroom
+    // rule every reliable send path obeys is measured against it.
     {
         const long bufKb =
             coop::config::ResolveInt(coop::config_registry::rows::net_sendbuf_kb);
-        sendBufBytes_ = (bufKb > 0) ? static_cast<int>(bufKb) * 1024
-                                    : kDefaultSendBufBytes;
+        admission_.SetSendBufBytes((bufKb > 0) ? static_cast<int>(bufKb) * 1024
+                                               : kDefaultSendBufBytes);
     }
     // The ready flag flips only after ConfigureConnectionLanes returns, so a reader sees the slot
     // ready only once the per-kind lane mapping is live; the release pairs with IsSlotReady's load.
@@ -591,6 +591,7 @@ void Session::HandleConnStatusChanged(void* info) {
             // measurement: the next occupant's GNS counters start at zero, so ours must too.
             backlog_.FreeSlot(slot);
             rateControl_.FreeSlot(slot);
+            admission_.FreeSlot(slot);
             relayEligible_[slot].store(0, std::memory_order_release);
         }
         // A terminal state requires CloseConnection to release the handle (the GNS header).
@@ -731,6 +732,7 @@ bool Session::KickClaimed(int peerSlot, uint32_t hConn, EndReason code, const ch
     // the link measurement with it.
     backlog_.FreeSlot(peerSlot);
     rateControl_.FreeSlot(peerSlot);
+    admission_.FreeSlot(peerSlot);
     relayEligible_[peerSlot].store(0, std::memory_order_release);
 
     if (auto* sockets = SteamNetworkingSockets()) {
