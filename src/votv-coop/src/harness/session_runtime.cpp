@@ -62,6 +62,7 @@
 #include "ue_wrap/core/log.h"
 #include "ue_wrap/core/reflection.h"
 #include "ue_wrap/core/sdk_profile.h"
+#include "ue_wrap/hotbar/icons.h"   // F-121: the quick-slot icon edge, session or not
 
 #include <windows.h>
 #define PSAPI_VERSION 2      // K32GetProcessMemoryInfo from kernel32 -- no psapi.lib link
@@ -746,6 +747,12 @@ void RunPlayLoop(bool idleInGameplay) {
                 if (idleInGameplay) {
                     // Solo gameplay, no session yet: keep the local observers live.
                     coop::subsystems::Install(g_session);
+                    // The quick-slot bar's icon edge is not a session's business -- the game
+                    // publishes its icon tables after its own post-load refresh whether or not
+                    // anyone is connected, so a solo world loses the race exactly as a hosted one
+                    // does. It rides the session tick when there is a session and this one when
+                    // there is not; it latches per world either way.
+                    ue_wrap::hotbar::Tick();
                 }
             }
             // The roster needs a live world and player; skipped at the menu.
