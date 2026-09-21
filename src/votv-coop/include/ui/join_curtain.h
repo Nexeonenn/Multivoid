@@ -1,10 +1,12 @@
 // ui/join_curtain.h -- the instant-world UPPER layer: the SHORT curtain.
 //
-// A full-viewport opaque cover the joining client raises at connect and dismisses with a smooth
-// alpha fade once the primary world is assembled -- SnapshotComplete plus the spawn drain, which is
-// NOT full quiescence. It hides the rawest connect moment: the client's own save load-in, the
-// camera settle, the spawn burst, and the local-actor reposition jumps that deferred spawning
-// cannot hide, because those actors are the engine's own. Lifting at SnapshotComplete, about two
+// A full-viewport opaque cover the joining client raises when its world starts loading and
+// dismisses with a smooth alpha fade once the primary world is assembled -- SnapshotComplete plus
+// the spawn drain, which is NOT full quiescence. It hides the rawest connect moment: the client's
+// own save load-in, the camera settle, the spawn burst, and the local-actor reposition jumps that
+// deferred spawning cannot hide, because those actors are the engine's own. It also covers the
+// wait between the world coming up and the host's bracket arriving, which is the host's to spend
+// and can be long. Lifting at SnapshotComplete, about two
 // seconds before quiescence, adds no long blank screen: the world fades in already assembled and
 // the uncertain tail keeps resolving invisibly under mirror_defer.
 //
@@ -18,7 +20,9 @@
 
 namespace coop::join_curtain {
 
-// Raise the cover (alpha = 1) -- CLIENT, at connect (alongside mirror_defer::Arm()).
+// Raise the cover (alpha = 1) -- CLIENT, at its world load (`join_progress::BeginWorldLoad`), and
+// again at the bracket for an in-gameplay join that never loads one (alongside
+// `mirror_defer::Arm()`). A plain store, so the second call is free.
 void Show();
 
 // Start the alpha-fade 1->0 (~0.4s) -- at "primary world assembled" (SnapshotComplete + drain,

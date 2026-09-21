@@ -300,7 +300,15 @@ void BeginWorldLoad() {
                                             std::memory_order_relaxed)) {
             g_stageStartMs.store(NowMs(), std::memory_order_relaxed);
             StampToken();
-            UE_LOGI("join_progress: LoadingWorld -- blob in, engine loading it");
+            // The cover goes up HERE, which is what its own contract says it is for: the client's
+            // save load-in, the camera settle, the spawn burst and the reposition jumps the engine
+            // makes with its own actors. Raised at the bracket instead, it covered the last second
+            // or two of a join and left the raw world on screen for the whole world load and the
+            // wait for the host's bracket -- the joiner stood in a half-built world reading a panel
+            // that said it was still loading. Idempotent: the bracket's own Show is then a no-op,
+            // and an in-gameplay join, which never loads a world, still raises it there.
+            coop::join_curtain::Show();
+            UE_LOGI("join_progress: LoadingWorld -- blob in, engine loading it (curtain up)");
             return;
         }
     }
