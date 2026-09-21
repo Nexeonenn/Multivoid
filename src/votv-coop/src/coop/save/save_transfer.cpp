@@ -502,7 +502,14 @@ void TickHost() {
             if (!g_session->TrySendReliableToSlot(
                     slot, coop::net::ReliableKind::SaveTransferBegin,
                     &hs.beginPayload, sizeof(hs.beginPayload))) {
-                continue;  // backpressure (or slot dropped) -- retry next tick
+                // Backpressure (or slot dropped) -- retry next tick, but SAY SO. Falling through
+                // to the `continue` alone left the slot emitting no beacon at all while the
+                // announce waited, and the joiner's watchdog would then name a host that is alive
+                // and correctly paced as one that stopped answering. Zero numerator, the same
+                // shape the capture branch above uses: the announce has not moved yet.
+                coop::join_beacon::NotePhase(slot, coop::net::HostJoinPhase::StreamingWorld, 0,
+                                             static_cast<uint32_t>(hs.blob.size()));
+                continue;
             }
             hs.beginSent = true;
         }

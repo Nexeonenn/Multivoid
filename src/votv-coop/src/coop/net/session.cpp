@@ -126,9 +126,20 @@ bool Session::TrySendReliableToSlot(int peerSlot, ReliableKind kind, const void*
     // it is 32 bytes, and it is the measurement the reserve is being kept for, so refusing it
     // would make the reserve invisible exactly where it matters. The save pump reads a false as
     // the pacing signal it already reads a full buffer as, and retries on its next tick.
-    if (!IsReserveExemptKind(kind) && !admission_.Admits(peerSlot, total)) {
-        admission_.NoteRefused(peerSlot);
-        return false;
+    //
+    // And because a refusal here IS that pacing signal -- nothing queues behind this path -- the
+    // time bound applies here and nowhere else: the queue a bulk stream is allowed to stand behind
+    // is measured in this link's own seconds, not in a buffer size that means 1.5 s on a LAN and
+    // two minutes on a contended uplink. See send_admission.h.
+    if (!IsReserveExemptKind(kind)) {
+        if (!admission_.Admits(peerSlot, total)) {
+            admission_.NoteRefused(peerSlot);
+            return false;
+        }
+        if (!admission_.AdmitsPacedStream(peerSlot, total)) {
+            admission_.NotePacedHold(peerSlot);
+            return false;
+        }
     }
     const uint32_t seq = sendSeq_.fetch_add(1);
     const int laneIdx = static_cast<int>(LaneForKind(kind));
@@ -281,6 +292,10 @@ void Session::SampleLinkRates(uint64_t nowMs) {
         in.gnsPingMs           = st.m_nPing;
         in.backlogBytes        = backlog_.DepthBytes(i);
         rateControl_.Sample(i, in, nowMs);
+        // And the sample just folded gives the admission rule the second term of its time bound:
+        // what this link DELIVERS, which is what a queue standing on it drains at. Taken after
+        // Sample so the estimate is this pass's, not the previous one's.
+        admission_.SetDrainRate(i, rateControl_.ServedBps(i));
         // What the law decided, handed to the transport. Per CONNECTION, because a connection is
         // what has a capacity -- and because nothing global sets a rate any more, this and
         // `connection_tuning`'s opening write are the only two rate writers in the process
@@ -510,6 +525,7 @@ void Session::NetThread() {
                 // Drained before the status read can fail: the counter is per-second by contract,
                 // and leaving it to the next pass would print two seconds under a one-second name.
                 const uint32_t headroomHeld = admission_.TakeRefusals(i);
+                const uint32_t pacedHeld    = admission_.TakePacedHolds(i);
                 SteamNetConnectionRealTimeStatus_t st{};
                 if (sockets->GetConnectionRealTimeStatus(hConn, &st, 0, nullptr) != k_EResultOK) continue;
                 sumInBps    += st.m_flInBytesPerSec;
@@ -529,13 +545,13 @@ void Session::NetThread() {
                                       std::memory_order_relaxed);
                 UE_LOGI("net-diag[slot %d]: ping=%dms qual=%.0f/%.0f%% in=%.0f out=%.0f pkt/s "
                         "sendRate=%dB/s pendRel=%dB pendUnrel=%dB unacked=%dB queue=%lldms "
-                        "backlog=%zuB headroomHeld=%u",
+                        "backlog=%zuB headroomHeld=%u pacedHeld=%u",
                         i, st.m_nPing, st.m_flConnectionQualityLocal * 100.f,
                         st.m_flConnectionQualityRemote * 100.f, st.m_flInPacketsPerSec,
                         st.m_flOutPacketsPerSec, st.m_nSendRateBytesPerSecond,
                         st.m_cbPendingReliable, st.m_cbPendingUnreliable,
                         st.m_cbSentUnackedReliable, queueMs, backlog_.DepthBytes(i),
-                        headroomHeld);
+                        headroomHeld, pacedHeld);
                 if (st.m_nPing > kHighPingMs)
                     UE_LOGW("net-diag[slot %d]: HIGH PING %d ms (> %d) -- the link/relay is slow",
                             i, st.m_nPing, kHighPingMs);

@@ -156,6 +156,17 @@ public:
     // The rate a connection opens at, for the connect-time write.
     static int64_t StartRateBps();
 
+    // What this slot's link actually DELIVERS per second, smoothed: the same `served` the anchor
+    // bounds against and the per-second line prints. This is what a queue on this link drains at,
+    // and therefore the only honest divisor for a bound expressed in seconds of queue. The
+    // transport's own `m_nSendRateBytesPerSecond` is NOT that number -- it is what GNS is PACED at,
+    // which on a policed link ran 1.29x above delivery, so a cap built on it admitted 2.57 s while
+    // claiming 2 s AND the metric checking it divided by the same inflated figure. A3's lens has
+    // already made this exact correction once (`303c5ef4`, the guard and the bound it protects must
+    // read the same number). 0 until the estimate is warm, which the caller reads as "nothing
+    // measured yet". Net thread: it reads the measured block through its one door.
+    int64_t ServedBps(int slot);
+
     // Session::Start: a new session measures from zero. Called before the net thread exists.
     // `controlEnabled` false leaves every link at whatever the transport was configured with, and
     // the measurements still run: that is the A1 behaviour, kept as the before-picture.

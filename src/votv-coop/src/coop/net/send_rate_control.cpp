@@ -31,6 +31,16 @@ void SendRateControl::Reset(bool controlEnabled, long pinnedKbs) {
 
 int64_t SendRateControl::StartRateBps() { return kStartRateBps; }
 
+int64_t SendRateControl::ServedBps(int slot) {
+    if (slot < 0 || slot >= kSlots) return 0;
+    // Through Take_, the one door to the measured block, so an armed teardown is performed here
+    // exactly as it is for every other net-thread reader rather than read around.
+    const Measured& m = Take_(slot);
+    // Until the EWMA is warm neither guard in the law may bind, and the same holds here: an
+    // estimate built from one or two samples would price a queue against noise.
+    return (m.servedSamples >= kServedWarmupSamples) ? m.servedBps : 0;
+}
+
 void SendRateControl::FreeSlot(int slot) {
     if (slot < 0 || slot >= kSlots) return;
     // Arm only, and touch neither counter. Clearing them here would race the net thread between its

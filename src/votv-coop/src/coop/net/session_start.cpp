@@ -126,6 +126,17 @@ bool Session::Start(const Config& cfg) {
                     "links run at the transport's own stock 256 KB/s, fixed for their whole life");
     }
     admission_.Reset();         // and every slot's send-buffer occupancy
+    // The time bound's budget, resolved once per session for the same reason the rate pin is:
+    // ResolveInt re-reads the ini on every call, so asking per send would let an ini edited
+    // mid-session change the rule under a stream already running against it.
+    {
+        const long capMs =
+            coop::config::ResolveInt(coop::config_registry::rows::bulk_queue_cap_ms);
+        admission_.SetQueueCapMs(capMs);
+        if (capMs <= 0)
+            UE_LOGW("net: bulk queue cap OFF (bulk_queue_cap_ms=0) -- a world blob may stand "
+                    "behind the whole send buffer again, which is minutes of queue on a slow link");
+    }
 
     // This peer's per-process session epoch, minted non-zero (0 is the receiver's "not yet latched"
     // sentinel) from a random device, so it is unpredictable off-path and differs between the

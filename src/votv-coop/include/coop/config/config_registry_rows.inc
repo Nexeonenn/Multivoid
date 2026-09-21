@@ -239,6 +239,14 @@ CFG_INT(stall_world_stream_at_pct, "stall_world_stream_at_pct", "dev", 0, 0, 99,
     "so this is a download that STOPS rather than a link that dies -- the shape a fixed transfer "
     "cap used to answer by booting a fresh world and finishing the join in it. The joiner's "
     "download budget now names it instead.")
+CFG_INT(bulk_queue_cap_ms, "bulk_queue_cap_ms", "dev", 2000, 0, 600000,
+    "VOTVCOOP_DEV_BULK_QUEUE_CAP_MS",
+    "How deep a queue a world-blob stream may stand behind, in milliseconds of the delivery "
+    "measured on that link (0 = off, the byte rule alone). Bytes inside the transport's send "
+    "buffer can be neither retracted nor reordered, so this is how long a cancelled transfer keeps "
+    "spending the host's uplink. The 4 MiB buffer it replaces as the binding limit measured 5.6 s "
+    "of queue on one policed joiner and 126 s on a slot losing a three-way race for one uplink, so "
+    "2000 is 63x under the worst of that. 0 stages that before-picture on this same binary.")
 CFG_FLAG(window_log, "window_log", "dev", false, nullptr,
     "Diagnostic logging for window sync.")
 CFG_FLAG(window_synth, "window_synth", "dev", false, nullptr,
