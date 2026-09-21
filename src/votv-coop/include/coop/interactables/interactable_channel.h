@@ -522,15 +522,21 @@ public:
         }
         scanFound_.clear();
         // Logged only when the count or the hash changes. The hash is the cross-peer key-stability
-        // signal (compare host and client).
-        if (liveCount != lastLogCount_ || keysHash != lastLogHash_) {
+        // signal (compare host and client), and it is also what says whether this census differs
+        // from the one already reported -- which the per-instance dump below reads too.
+        const bool censusChanged = (liveCount != lastLogCount_ || keysHash != lastLogHash_);
+        if (censusChanged) {
             lastLogCount_ = liveCount;
             lastLogHash_ = keysHash;
             UE_LOGI("%s: index rebuilt -- %zu live keyed instance(s), keysHash=0x%016llX "
                     "(compare host vs client for cross-peer Key stability)",
                     a_.name, liveCount, static_cast<unsigned long long>(keysHash));
         }
-        if (ProbeLog()) {
+        // The dump rides the SAME gate as the summary above. A census that has not changed has
+        // nothing new to say about identity, and re-printing it every pass costs a dozen reflection
+        // reads per instance and buries the one pass that did change: one key's line was printed 73
+        // times in a single join, and six channels together put about 20,000 of these in one run.
+        if (censusChanged && ProbeLog()) {
             // The identity probe: for each indexed instance, every candidate for a cross-peer
             // identity alongside the key: the UObject name (baked into the level package for a
             // placed actor, counter-suffixed for a spawned one), the Outer, the class, the object
