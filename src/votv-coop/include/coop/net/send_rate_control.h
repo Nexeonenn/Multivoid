@@ -8,11 +8,17 @@
 // the pose stream rides. A busy link reports both once a second; an idle one is probed slowly and
 // silently, because a baseline taken only under load is the queue it is supposed to reveal.
 //
-// From those two numbers this module also DECIDES the rate, behind `net.ratecontrol`, and the
-// session writes it to the connection. The law is anchored to the delivery it measures: a rate may
-// not stand far above the bytes the peer is acknowledging, and it brakes when the bytes in flight
-// grow past a few hundred milliseconds of that delivery. Both terms are byte counters, which is the
-// whole point -- see the block below for the two laws that were built and refuted before it.
+// From those two numbers this module also DECIDES the rate, and the session writes it to the
+// connection. The law is anchored to the delivery it measures: a rate may not stand far above the
+// bytes the peer is acknowledging, and it brakes when the bytes in flight grow past a few hundred
+// milliseconds of that delivery. Both terms are byte counters, which is the whole point -- see the
+// block below for the two laws that were built and refuted before it.
+//
+// This is now the ONLY writer of a send rate. The 1 MiB/s global floor that used to stand under
+// every connection is deleted (`coop/net/session_start`), so a link is paced by what it measures or
+// by nothing: `net.ratecontrol=0` is a drill's control arm and leaves the transport at its own
+// stock 256 KB/s, and `net.sendrate_kbs` pins a fixed rate for an experiment. Neither is a
+// fallback to the old behaviour, because the old behaviour was the defect.
 
 #pragma once
 
@@ -191,7 +197,7 @@ public:
         int    pendingReliable     = 0;  // m_cbPendingReliable: handed to GNS, not yet on the wire
         int    sentUnackedReliable = 0;  // m_cbSentUnackedReliable: on the wire, not yet acked
         int    pendingUnreliable   = 0;  // m_cbPendingUnreliable
-        int    gnsRateBps          = 0;  // m_nSendRateBytesPerSecond: the pin, for the record
+        int    gnsRateBps          = 0;  // m_nSendRateBytesPerSecond: what it is pacing at now
         int    gnsPingMs           = -1; // m_nPing: an RTT floor (min-filtered), the cross-check
         size_t backlogBytes        = 0;  // SendBacklog::DepthBytes: queued before GNS ever saw it
     };

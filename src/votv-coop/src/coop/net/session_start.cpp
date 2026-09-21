@@ -56,20 +56,26 @@ bool EnsureGnsInit() {
         UE_LOGE("net: GameNetworkingSockets_Init failed: %s", err);
         return false;
     }
-    // The send-rate ceiling raised. GNS stock defaults the send rate to 256 KB/s, which a session's
-    // reliable bursts saturate (the connect snapshot, the re-seed that re-sends it when the host's
-    // world mass-purges props); during a saturated burst the unreliable pose stream is starved, so
-    // the remote player lags while a client's own edits stay real-time. This GNS build has no rate
-    // adaptation: the estimate is written once at connection init from the ping and then only
-    // clamped into the range, so any internet ping above a few milliseconds runs at the minimum
-    // for the session's life, and a host uplink slower than the minimum is overdriven with pure
-    // loss and retransmits; the per-connection net.sendrate_kbs knob is the remedy. Global, so
-    // every connection on both topologies.
+    // NOTHING GLOBAL SETS THE SEND RATE ANY MORE. This is where a 1 MiB/s floor and a 25 MiB/s
+    // ceiling used to be written for every connection on both topologies, on the premise that a
+    // raised floor protects the unreliable pose stream from a saturated reliable burst. Both halves
+    // were measured wrong: the floor was the RATE on every link a player has, because GNS writes
+    // its estimate once at connect from the ping and thereafter only clamps it -- 63,052 of 63,052
+    // distinct field samples read 1 MiB/s to the byte, and a host uplink thinner than that was
+    // overdriven into pure loss, costing 71% of a 256 KB/s link. The ceiling needed an init ping
+    // under 0.17 ms, and no measurement in the whole arc ever came near it. And the floor did not
+    // protect the pose stream either: nothing drops a queued unreliable message, what starves one
+    // is the shared send buffer, and a reliable RETRANSMISSION is gathered before the lane-priority
+    // loop, so overdrive is what puts a bulk retry ahead of lane 0. The rate is now per connection
+    // and measured -- `coop/net/send_rate_control` decides it and `coop/net/connection_tuning`
+    // opens it -- so a global write here would be a second writer of the one quantity that has an
+    // owner. `docs/NET_SEND_RATE_ARC.md` sections 2, 5.2-5.4, 8f, 8g.
+    //
+    // The overdrive drill knob is the one thing still written globally, and correctly so: it
+    // simulates a thin outbound link with GNS's send policer, which silently drops packets beyond
+    // the token budget. That is the PHYSICS of the box's uplink, not a policy about a link. 0 is
+    // off, the shipped default.
     if (auto* utils = SteamNetworkingUtils()) {
-        utils->SetGlobalConfigValueInt32(k_ESteamNetworkingConfig_SendRateMin, 1 * 1024 * 1024);
-        utils->SetGlobalConfigValueInt32(k_ESteamNetworkingConfig_SendRateMax, 25 * 1024 * 1024);
-        // The overdrive drill knob: a thin outbound link simulated with GNS's send policer, which
-        // silently drops packets beyond the token budget. 0 is off, the shipped default.
         const long fakeKbs =
             coop::config::ResolveInt(coop::config_registry::rows::net_fakelink_kbs);
         if (fakeKbs > 0) {
@@ -81,7 +87,8 @@ bool EnsureGnsInit() {
         }
     }
     g_inited = true;
-    UE_LOGI("net: GameNetworkingSockets_Init OK (send rate raised: min 1 MB/s, max 25 MB/s)");
+    UE_LOGI("net: GameNetworkingSockets_Init OK (no global send-rate pin -- the rate is measured "
+            "per connection)");
     return true;
 }
 
@@ -114,8 +121,8 @@ bool Session::Start(const Config& cfg) {
             UE_LOGW("net: send-rate control OVERRIDDEN by net.sendrate_kbs -- the link is pinned, "
                     "not measured");
         else if (!want)
-            UE_LOGW("net: send-rate control OFF (net.ratecontrol=0) -- links run at the "
-                    "transport's connect-time estimate, which it never revisits");
+            UE_LOGW("net: send-rate control OFF (net.ratecontrol=0) -- nothing writes a rate, so "
+                    "links run at the transport's own stock 256 KB/s, fixed for their whole life");
     }
     admission_.Reset();         // and every slot's send-buffer occupancy
 

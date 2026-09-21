@@ -54,6 +54,10 @@ void TuneConnection(uint32_t hConn, bool rateControlled) {
     // transport's ping-derived guess -- which on a thin uplink is the overdrive that controller
     // exists to end, and the admission exchange that runs before a slot exists is inside exactly
     // that window.
+    //
+    // With both off nothing is written and the link runs at GNS's stock 256 KB/s, fixed. That is
+    // the control arm of an experiment and not a shipped path: there is no global pin behind this
+    // any more, so these are the only two writers of an opening rate in the process.
     const long rateKbs = coop::config::ResolveInt(coop::config_registry::rows::net_sendrate_kbs);
     if (rateKbs > 0) {
         const int32 pinned = static_cast<int32>(rateKbs) * 1024;

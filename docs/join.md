@@ -365,7 +365,7 @@ not raise the game's own active-event counter, whose save and pause blocks the m
 
 | Limit | Evidence |
 |---|---|
-| The transfer runs at a fixed send rate the mod configures, about one megabyte per second on an internet link, with no bandwidth estimation, so a large world is a long download | `[V]` `coop/net/session_start`, `coop/net/session_status` |
+| The transfer runs at a rate the mod measures per connection, climbing from about 145 KB/s to whatever the link acknowledges carrying; the transport itself contributes no bandwidth estimation, so a link that genuinely is slow is still a long download | `[V]` `coop/net/send_rate_control`, `coop/net/connection_tuning` |
 | The world load is capped by the probe's two deadlines, one on no progress and one absolute; a load past either announces into a world that may still be churning, logged as degraded | `[V]` `coop/session/world_load_episode` |
 | Keyless save-loaded objects are matched by position; the index-to-id sidecar is built and transferred, and its bind is off by default, behind the `save_identity_bind` developer flag | `[V]` `coop/config/config_registry_rows.inc`, `coop/props/save_identity_bind` |
 | A host change inside the window that post-dates the snapshot (a kerfur turned off) materialises at quiescence, after the curtain has lifted, as a visible pop-in | `[V]` `coop/element/mirror_defer` holds it until quiescence |
