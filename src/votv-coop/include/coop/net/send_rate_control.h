@@ -90,15 +90,26 @@ public:
     // Where a link opens, for the connect-time write: the window between the transport's
     // ping-derived guess and this controller's first decision belongs to nobody otherwise. Opening
     // WIDE is precisely the overdrive this controller exists to end -- 17x into a thin link was
-    // measured costing 71% of it -- and opening at the floor makes every join on a good link crawl,
-    // so it opens one climb-step short of a tenth of the ceiling.
+    // measured costing 71% of it -- and opening at the floor makes every join on a good link crawl.
+    // It opens at 4.5x the floor, about 1% of the ceiling: measured reaching the ceiling in three
+    // seconds on a link that has the headroom, and inside a thin link's capacity rather than 17x
+    // outside it. The value is also the rung the refuted ladder happened to open on, kept because
+    // two runs measured it and nothing argues for moving it.
     static constexpr int64_t kStartRateBps = 145 * 1024;
 
     // THE ANCHOR, and the one guard that would have stopped both refuted laws on its own. A rate
     // may not stand above this multiple of the delivery it is measured against, while there is
-    // reliable work to measure. The archived run sat at a median of 442x; at 2.5x the same link
-    // delivered 91.7% of the policer's nominal rate, so the knee is well inside this bound.
-    static constexpr int kOverdriveNum = 2, kOverdriveDen = 1;
+    // reliable work to measure. The archived refuted run sat at a median of 442x.
+    //
+    // The margin above 1.0 is what probes for capacity the link has not yet been asked for, and it
+    // is paid for in LOSS: pacing at k times what the link carries offers (k-1)/k of every packet
+    // to a bottleneck that cannot take it. Measured at k=2 on the drop-policed rig -- goodput 95.3%
+    // of nominal, but the peer reported `qual=51/100`, i.e. about half of what we sent had to be
+    // retransmitted. That is not free here: reliable RETRANSMISSIONS are gathered before the lane
+    // priority loop (§5.2 of the arc doc, `snp.cpp:2476-2547`), so a Bulk retry outranks the lane-0
+    // pose datagram this controller exists to protect. 5/4 is the same probe margin BBR uses and
+    // the same step the climb takes, so the rate tracks delivery instead of standing above it.
+    static constexpr int kOverdriveNum = 5, kOverdriveDen = 4;
 
     // THE BRAKE and its dead band, in milliseconds of delivery standing on the wire. Measured on
     // the archived closed-loop run: the healthy regime's p90 was 163 ms and the collapsed regime's
@@ -114,9 +125,19 @@ public:
     static constexpr int64_t kClimbStepBps = 8 * 1024;
 
     // The delivery estimate's smoothing over the 10 Hz samples, as a shift: new = old - old/4 +
-    // sample/4, a ~400 ms time constant. One 100 ms sample is too noisy to anchor a rate to, and a
-    // full second is too slow for a join to climb inside.
+    // sample/4, a ~400 ms time constant. One 100 ms sample is too noisy to brake on, and a full
+    // second is too slow for a join to climb inside.
     static constexpr int kServedEwmaShift = 2;
+    // How many samples the ANCHOR takes its maximum over, which is the same span as the EWMA's time
+    // constant. The anchor may not read the EWMA, and the reason is a measured regression: while a
+    // link is climbing, delivery equals the rate and the EWMA lags it by about half, so an anchor
+    // fed by the EWMA clamps BELOW the rate that is already succeeding and fights its own climb --
+    // an unpoliced join went from 5 s under no control at all to 13 s under the law, never reaching
+    // the ceiling. A maximum over the same span has no lag on the way up, because the newest sample
+    // enters it whole, while on the way down it still expires in 400 ms. The two quantities answer
+    // different questions: the EWMA asks "what is this link carrying", the maximum asks "what has
+    // it just been shown to carry".
+    static constexpr int kServedPeakSamples = 1 << kServedEwmaShift;
     // And how many samples that estimate is worth dividing by. An EWMA is not a measurement before
     // its own time constant has passed, and the first sample of a transfer is the worst case there
     // is: the save pump offers 13.1 MiB/s, so the send buffer is already deep while the delivery
@@ -259,6 +280,10 @@ private:
         // rate paces everything, so each comparison here is given the traffic it belongs to.
         int64_t  servedBps = 0;
         int      servedSamples = 0;    // until the EWMA is warm, neither guard may bind
+        // The anchor's own view of the same quantity: the last kServedPeakSamples raw readings, of
+        // which it takes the maximum. See kServedPeakSamples for why this may not be the EWMA.
+        int64_t  servedRing[kServedPeakSamples]{};
+        int      servedRingIdx = 0;
         int64_t  prevUnrel  = 0;       // the unreliable counter at the previous sample
         // The last decision's inputs, kept for the reported line: a field log that cannot show why
         // the rate moved is the state this whole arc started in.

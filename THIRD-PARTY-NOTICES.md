@@ -1017,6 +1017,11 @@ SOFTWARE.
 
 ```
 
+---
+
+The fonts below are embedded in `main.dll` as PE resources and merged into the
+overlay's glyph atlas at runtime.
+
 ## Roboto
 
 Embedded font (Apache License 2.0). Upstream: https://fonts.google.com/specimen/Roboto. Source of this text: `src/votv-coop/assets/fonts/LICENSE-Roboto.txt`.

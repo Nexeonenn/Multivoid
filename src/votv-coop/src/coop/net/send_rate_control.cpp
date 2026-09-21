@@ -131,10 +131,17 @@ void SendRateControl::Steer_(Measured& m) {
     // leave where it is -- and a rate raised on an empty link is the rate the next burst opens at,
     // which is root A rebuilt by the thing meant to end it.
     if (m.demand < kIdleDemandBytes) { ++m.holdCount; return; }
-    // Not measured YET: neither guard may bind on an estimate younger than its own time constant.
-    // This is the whole of the "no reading" behaviour, where the first law needed one answer per
-    // clause and had none -- there is one state here and it holds at the opening rate.
-    if (m.servedSamples < kServedWarmupSamples) { ++m.holdCount; return; }
+    // NOT MEASURED, in either of the two ways that happens: an estimate younger than its own time
+    // constant, or one that has decayed to nothing because the link went silent while work stayed
+    // queued. This is the whole of the "no reading" behaviour, where the first law needed one answer
+    // per clause and had none -- there is one state here and it holds the rate where it is.
+    //
+    // The second half is load-bearing and was a real defect until an audit traced it: `servedBps` is
+    // an arithmetic-shift EWMA and reaches exactly 0, and a slot with bytes queued but nothing on
+    // the wire reads `unacked == 0` -> `inflightMs == 0` -> the CLIMB branch. Every guard below is
+    // then a multiple of zero, so the rate climbed 1.25x per 100 ms to the ceiling unopposed and the
+    // next burst opened there -- root A rebuilt by the controller that exists to end it.
+    if (m.servedSamples < kServedWarmupSamples || m.servedBps <= 0) { ++m.holdCount; return; }
 
     // Little's law, read backwards: the bytes the transport has on the wire and unacknowledged,
     // divided by the rate those bytes are being acknowledged at, is the time the wire is standing
@@ -159,12 +166,23 @@ void SendRateControl::Steer_(Measured& m) {
         ++m.deadCount;
     }
 
-    // THE ANCHOR, applied to every decision including the ones that changed nothing. A rate may not
-    // stand above a small multiple of what the link is actually carrying, whatever the delay term
-    // says -- and on the archived run the delay term said "accelerate" for 180 of 210 seconds while
-    // this bound was 442x away. It is deliberately the last word.
-    const int64_t cap = m.servedBps * kOverdriveNum / kOverdriveDen;
-    if (cap > 0 && m.rateBps > cap) {
+    // THE ANCHOR, applied unconditionally to every decision including the ones that changed nothing.
+    // A rate may not stand above a small multiple of what the link is actually carrying, whatever
+    // the delay term says -- and on the archived run the delay term said "accelerate" for 180 of 210
+    // seconds while this bound was 442x away. It is deliberately the last word, and it carries no
+    // guard of its own: the peak is positive by the time any decision reaches here, because the
+    // hold above is what a zero means.
+    //
+    // It reads the windowed MAXIMUM, never the EWMA -- see kServedPeakSamples. A climbing link
+    // delivers exactly what it is paced at, so an average that lags the climb reports a link half
+    // as capable as it just proved itself to be, and the anchor would brake a link that is not
+    // failing.
+    int64_t peak = 0;
+    for (int64_t v : m.servedRing) {
+        if (v > peak) peak = v;
+    }
+    const int64_t cap = peak * kOverdriveNum / kOverdriveDen;
+    if (m.rateBps > cap) {
         m.rateBps = cap;
         ++m.anchorCount;
     }
@@ -247,6 +265,10 @@ void SendRateControl::Sample(int slot, const LinkSample& in, uint64_t nowMs) {
         // before its transfer would otherwise arrive at the first chunk already "warm" on an
         // estimate of zero, which is the same cold-start brake by another route.
         if (servedSample > 0 && m.servedSamples < kServedWarmupSamples) ++m.servedSamples;
+        // The anchor's window, kept raw. A quiet sample is recorded as the zero it is, so the peak
+        // expires within the window rather than being propped up by a link that has stopped.
+        m.servedRing[m.servedRingIdx] = servedSample;
+        m.servedRingIdx = (m.servedRingIdx + 1) % kServedPeakSamples;
         Steer_(m);
     }
     m.prevDelivered = delivered;
