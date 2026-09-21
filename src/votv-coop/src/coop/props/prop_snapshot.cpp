@@ -37,6 +37,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <string>
 #include <vector>
@@ -65,12 +66,42 @@ uint32_t g_snapshotSentTotal = 0;
 int g_currentTargetSlot = -1;
 std::vector<int> g_pendingSlots;
 
-// Slots whose bracket was deferred because the registry does not yet express the host's current
-// world (mid world-transition). The flush at the top of DrainChunk retries them on every
-// seed-generation bump; TriggerForSlot consumes, and may re-set, the flag. Game thread.
+// Slots whose bracket was deferred: the lanes are not configured yet, the registry does not yet
+// express the host's current world, or the drill is holding it. DrainChunk retries each on a
+// cadence; TriggerForSlot consumes, and may re-set, the flag. Game thread.
 std::array<bool, coop::players::kMaxPeers> g_deferredSlots{};
-uint64_t g_deferredSeenGen = 0;  // SeedGeneration latched at defer; flush fires on the next bump
-uint64_t g_drainSeedGen    = 0;  // SeedGeneration captured when the current drain started
+uint64_t g_drainSeedGen = 0;  // SeedGeneration captured when the current drain started
+
+// WHEN EACH DEFERRED SLOT IS TRIED AGAIN. The retry used to be a seed-generation bump, i.e. a
+// WORLD TRANSITION -- and so did the other two paths that could reach a deferred slot. With the
+// host settled and the joiner already world-ready, nothing re-armed the slot at all: the lanes
+// finish configuring a few milliseconds later, the purge episode ends four seconds later, and
+// neither of those bumps a generation. The joiner then sat on a healthy connection until the
+// whole-join failsafe fired. One second, the beacon's own cadence, so every note that tells the
+// joiner it is deferred is also an attempt to stop being deferred.
+constexpr int64_t kDeferRetryMs = 1000;
+int64_t g_deferRetryAtMs[coop::players::kMaxPeers]{};
+// What each slot's last LOGGED defer said, so a retry that changes nothing does not reprint its
+// reason every second; a defer whose reason changed, or a fresh one, still speaks.
+enum class DeferReason : int { None = 0, LanesNotReady, DrillHold, RegistryIncoherent, MajorityDead };
+DeferReason g_deferLogged[coop::players::kMaxPeers]{};
+
+int64_t NowMsSteady_() {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+               std::chrono::steady_clock::now().time_since_epoch())
+        .count();
+}
+
+// The one defer: raise the flag, arm the next retry, and speak only when this slot's reason is
+// new. Every site that refuses to bracket a slot goes through here.
+void DeferSlot_(int peerSlot, DeferReason why, const char* what) {
+    g_deferredSlots[peerSlot] = true;
+    g_deferRetryAtMs[peerSlot] = NowMsSteady_() + kDeferRetryMs;
+    if (g_deferLogged[peerSlot] == why) return;
+    g_deferLogged[peerSlot] = why;
+    UE_LOGW("snapshot: DEFERRING slot %d -- %s (retrying every %llds until it clears)",
+            peerSlot, what, static_cast<long long>(kDeferRetryMs / 1000));
+}
 
 bool AnyDeferred_() {
     for (int s = 1; s < coop::players::kMaxPeers; ++s) {
@@ -90,6 +121,7 @@ constexpr size_t kSnapshotChunkSize = 100;
 // progress. Per-candidate liveness is re-checked in DrainChunk.
 void StartEnumerationFor(int peerSlot) {
     g_currentTargetSlot = peerSlot;
+    g_deferLogged[peerSlot] = DeferReason::None;  // it got through; a later defer is news again
     // The generation this drain expresses: TriggerForSlot dedupes a re-trigger of the same slot for
     // the same generation.
     g_drainSeedGen = PT::SeedGeneration();
@@ -123,11 +155,12 @@ void StartEnumerationFor(int peerSlot) {
     // and a sublevel stream-out is small against the live world, so majority-dead only means a
     // transition.
     if (skippedDying > static_cast<int>(g_snapshotCandidates.size())) {
-        UE_LOGW("snapshot: registry is majority-dead (%d dying vs %zu live) -- mid world-transition; "
-                "DEFERRING slot %d instead of bracketing",
-                skippedDying, g_snapshotCandidates.size(), peerSlot);
-        g_deferredSlots[peerSlot] = true;
-        g_deferredSeenGen = PT::SeedGeneration();
+        char why[128];
+        std::snprintf(why, sizeof(why),
+                      "the registry is majority-dead (%d dying vs %zu live), so it is mid "
+                      "world-transition, not a world to bracket",
+                      skippedDying, g_snapshotCandidates.size());
+        DeferSlot_(peerSlot, DeferReason::MajorityDead, why);
         ClearDrainState_();
         return;
     }
@@ -166,20 +199,16 @@ void ClearDrainState_() {
 // transition -- which is the defect, and not something the instrument should have to stage.
 int64_t g_drillHoldUntilMs[coop::players::kMaxPeers]{};
 
-int64_t NowMsSteady_() {
-    return std::chrono::duration_cast<std::chrono::milliseconds>(
-               std::chrono::steady_clock::now().time_since_epoch())
-        .count();
-}
-
 // True while the drill is holding this slot's bracket; arms the deadline on the first ask.
 bool DrillHoldsSlot_(int peerSlot) {
-    const long holdSec =
+    // Resolved once: ResolveInt reads the ini from disk on every call, and with the retry on a
+    // cadence this is now asked once a second per deferred slot rather than once per trigger.
+    static const long sHoldSec =
         coop::config::ResolveInt(coop::config_registry::rows::hold_snapshot_sec);
-    if (holdSec <= 0) return false;
+    if (sHoldSec <= 0) return false;
     const int64_t now = NowMsSteady_();
     if (g_drillHoldUntilMs[peerSlot] == 0)
-        g_drillHoldUntilMs[peerSlot] = now + static_cast<int64_t>(holdSec) * 1000;
+        g_drillHoldUntilMs[peerSlot] = now + static_cast<int64_t>(sHoldSec) * 1000;
     if (now < g_drillHoldUntilMs[peerSlot]) return true;
     g_drillHoldUntilMs[peerSlot] = 0;
     return false;
@@ -345,23 +374,18 @@ void TriggerForSlot(int peerSlot) {
                 peerSlot, static_cast<unsigned>(coop::players::kMaxPeers));
         return;
     }
-    // The deferred flag is consumed here, by whichever of the re-seed retrigger and the DrainChunk
-    // flush runs first; the gates below re-set it.
+    // The deferred flag is consumed here; the gates below re-set it through DeferSlot_, which
+    // re-arms the retry and decides whether the reason is worth printing again.
     g_deferredSlots[peerSlot] = false;
     // IsSlotReady, not IsSlotConnected: the connection handle exists a few ms before the lanes are
     // configured, and a drain triggered in that window queues ~1,700 PropSpawns on the
     // high-priority lane instead of the bulk lane.
     if (!s->IsSlotReady(peerSlot)) {
-        // The flag goes back so the generation flush retries once the lanes configure.
-        g_deferredSlots[peerSlot] = true;
-        g_deferredSeenGen = PT::SeedGeneration();
-        UE_LOGW("snapshot: slot %d not ready (lanes not yet configured) -- deferring TriggerForSlot", peerSlot);
+        DeferSlot_(peerSlot, DeferReason::LanesNotReady, "its lanes are not configured yet");
         return;
     }
     if (DrillHoldsSlot_(peerSlot)) {
-        g_deferredSlots[peerSlot] = true;
-        g_deferredSeenGen = PT::SeedGeneration();
-        UE_LOGW("snapshot: [dev] hold_snapshot_sec -- HOLDING slot %d's bracket", peerSlot);
+        DeferSlot_(peerSlot, DeferReason::DrillHold, "[dev] hold_snapshot_sec is holding its bracket");
         return;
     }
     // A bracket is a destructive contract (the client destroys every unclaimed in-universe local at
@@ -374,9 +398,8 @@ void TriggerForSlot(int peerSlot) {
     // this invariant for free from its synchronous entity tree (CMapManager::SendMapInformation).
     if (!PT::HasSeededOnce() || !PT::IsRegistrySeededForCurrentWorld() ||
         PT::InPurgeEpisode()) {
-        g_deferredSlots[peerSlot] = true;
-        g_deferredSeenGen = PT::SeedGeneration();
-        UE_LOGW("snapshot: registry does not express the current world (transition in progress) -- DEFERRING slot %d until the next re-seed", peerSlot);
+        DeferSlot_(peerSlot, DeferReason::RegistryIncoherent,
+                   "the registry does not express the current world (a transition is in progress)");
         return;
     }
     if (g_currentTargetSlot != -1) {
@@ -402,26 +425,21 @@ void TriggerForSlot(int peerSlot) {
 }
 
 void DrainChunk() {
-    // The deferred-slot flush: every seed-generation bump retries each deferred slot, and
-    // TriggerForSlot re-defers if a second travel raced in. Before the no-drain early-out (the only
-    // per-tick call site); idle cost is a scan of the flags.
+    // The deferred-slot retry, once a second per slot: TriggerForSlot re-defers if the world is
+    // still not one to bracket. Before the no-drain early-out (the only per-tick call site); idle
+    // cost is a scan of the flags.
     if (AnyDeferred_()) {
         // A deferred slot is the one host-side wait no message covered: the joiner has a world, the
         // link is healthy, and the bracket it is waiting for is being held here. Say so every pass,
         // so the wait is a wait and not a silence.
+        const int64_t now = NowMsSteady_();
         for (int slot = 1; slot < coop::players::kMaxPeers; ++slot) {
             if (!g_deferredSlots[slot]) continue;
             coop::join_beacon::NotePhase(slot, coop::net::HostJoinPhase::SnapshotDeferred, 0, 0);
-            // The drill's own release: a slot it held is retried the moment its deadline passes.
-            if (g_drillHoldUntilMs[slot] != 0 && NowMsSteady_() >= g_drillHoldUntilMs[slot])
-                TriggerForSlot(slot);
-        }
-        const uint64_t gen = PT::SeedGeneration();
-        if (gen != g_deferredSeenGen) {
-            g_deferredSeenGen = gen;
-            for (int slot = 1; slot < coop::players::kMaxPeers; ++slot) {
-                if (g_deferredSlots[slot]) TriggerForSlot(slot);  // consumes/re-sets its own flag
-            }
+            // And the retry itself, on the same second: TriggerForSlot re-reads every gate and
+            // either brackets the slot or defers it again with a fresh deadline. It consumes and
+            // may re-set the flag, so the loop must not assume either.
+            if (now >= g_deferRetryAtMs[slot]) TriggerForSlot(slot);
         }
     }
     if (g_currentTargetSlot == -1) return;
@@ -443,8 +461,8 @@ void DrainChunk() {
     if (!PT::IsRegistrySeededForCurrentWorld() || PT::InPurgeEpisode()) {
         UE_LOGW("snapshot: world transition mid-drain (slot %d, %u sent) -- aborting WITHOUT SnapshotComplete; slot deferred",
                 g_currentTargetSlot, g_snapshotSentTotal);
-        g_deferredSlots[g_currentTargetSlot] = true;
-        g_deferredSeenGen = PT::SeedGeneration();
+        DeferSlot_(g_currentTargetSlot, DeferReason::RegistryIncoherent,
+                   "the host travelled mid-drain");
         ClearDrainState_();
         DequeuePending_();
         return;
@@ -592,6 +610,8 @@ void CancelForSlot(int peerSlot) {
     // A slot that disconnects while deferred is not retried; cleared before the in-progress check.
     if (peerSlot >= 1 && peerSlot < coop::players::kMaxPeers) {
         g_deferredSlots[peerSlot] = false;
+        g_deferRetryAtMs[peerSlot] = 0;
+        g_deferLogged[peerSlot] = DeferReason::None;
         g_drillHoldUntilMs[peerSlot] = 0;  // a recycled slot is not still being held
     }
     // Out of the pending queue (queued, then disconnected before its turn).
@@ -614,7 +634,10 @@ size_t OnDisconnect() {
     g_pendingSlots.shrink_to_fit();
     // No deferred slot survives into the next session.
     g_deferredSlots.fill(false);
-    g_deferredSeenGen = 0;
+    for (int slot = 0; slot < coop::players::kMaxPeers; ++slot) {
+        g_deferRetryAtMs[slot] = 0;
+        g_deferLogged[slot] = DeferReason::None;
+    }
     g_drainSeedGen = 0;
     return pending;
 }
