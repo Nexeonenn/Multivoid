@@ -151,6 +151,7 @@
 
 #include "ue_wrap/core/log.h"
 #include "ue_wrap/core/walk_timer.h"  // per-sync [WALK-TIME] attribution (diagnostic)
+#include "ue_wrap/hotbar/icons.h"     // F-121: the quick-slot bar's missing icon-table edge
 
 namespace coop::subsystems {
 
@@ -623,6 +624,7 @@ void TickGameplay(coop::net::Session& session, bool isConnected, bool isHost,
     { PP::Scope _s{PP::Bucket::Interactable}; ue_wrap::ScopedWalkTimer _w{"sync:wisp_attack"}; coop::wisp_attack_sync::Tick(); }  // host detect wisp-grabs-client -> neutralize + relay (host-only, no-op on client)
     { PP::Scope _s{PP::Bucket::Interactable}; ue_wrap::ScopedWalkTimer _w{"sync:wisp_tear"}; coop::wisp_tear_mirror::Tick(); }  // discharge the victim's scheduled ragdoll death (any peer, no-op until armed)
     { PP::Scope _s{PP::Bucket::Interactable}; ue_wrap::ScopedWalkTimer _w{"sync:player_inventory"}; coop::player_inventory_sync::Tick(); }  // the client's profile stream / the host's on-join push (+ the inventory_selftest=1 read-verify)
+    { PP::Scope _s{PP::Bucket::Interactable}; ue_wrap::ScopedWalkTimer _w{"sync:hotbar_icons"}; ue_wrap::hotbar::Tick(); }  // F-121: the game's icon renderer publishes its tables AFTER the post-load bar refresh and tells only the equipment panel -- rebuild the quick-slot bar once per world when they arrive
     { PP::Scope _s{PP::Bucket::Interactable}; ue_wrap::ScopedWalkTimer _w{"sync:live_store_readout"}; coop::dev::live_store_readout::Tick(); }  // READ-ONLY observability for the live personal store (GObjStack[playerContainer.Index]) by content (no-op unless live_store_readout=1)
     { PP::Scope _s{PP::Bucket::Interactable}; ue_wrap::ScopedWalkTimer _w{"sync:inventory_pickup_drill"}; coop::dev::inventory_pickup_drill::Tick(&session); }  // dev drill: a client pockets one prop through the game's own verb (no-op unless its env switch is set)
     // The trash pile collect-counter poll and depletion death-watch; a chipPile re-grab fires from

@@ -146,6 +146,14 @@ bool ReadAll(PlayerInventory& out) {
     return true;
 }
 
+int32_t LivePersonalStoreCount() {
+    void* save = ResolveSaveSlot();
+    if (!save) return -1;
+    const uint8_t* slot = PersonalSlotOf(save);
+    if (!slot) return -1;
+    return SR::ReadArr(slot, 0).num;
+}
+
 bool ReadLivePersonalStore(LivePersonalStore& out) {
     out.slotIndex = -1;
     out.records.clear();

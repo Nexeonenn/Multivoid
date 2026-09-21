@@ -1,0 +1,248 @@
+// ue_wrap/hotbar/icons.cpp -- see ue_wrap/hotbar/icons.h.
+
+#include "ue_wrap/hotbar/icons.h"
+
+#include "ue_wrap/actors/inventory.h"
+#include "ue_wrap/actors/sleep.h"   // the shared live-mainGamemode accessor
+#include "ue_wrap/core/cached_obj_ref.h"
+#include "ue_wrap/core/call.h"
+#include "ue_wrap/core/field_io.h"
+#include "ue_wrap/core/log.h"
+#include "ue_wrap/core/reflection.h"
+#include "ue_wrap/core/sdk_profile.h"
+
+#include <chrono>
+
+namespace ue_wrap::hotbar {
+namespace {
+
+namespace R   = ue_wrap::reflection;
+namespace P   = ue_wrap::profile;
+namespace FIO = ue_wrap::field_io;
+namespace INV = ue_wrap::inventory;
+
+constexpr const wchar_t* kUiClass    = L"ui_UI_C";
+constexpr const wchar_t* kPropProc   = L"propProcessor_C";
+constexpr const wchar_t* kGameInst   = L"mainGameInstance_C";
+constexpr const wchar_t* kMatInst    = L"MaterialInstance";   // owns TextureParameterValues
+constexpr const wchar_t* kTexParam   = L"tex";                // the parameter updateSlotInv writes
+constexpr const wchar_t* kRefreshFn  = L"updateSlotInv";
+
+// The edge is checked a few times a second until it fires, then never again for that world. The
+// read is a handful of pointer chases and TArray headers, and it stops entirely once latched.
+constexpr int kPollTicks = 15;   // ~8 Hz at ~120 Hz
+
+struct Offsets {
+    bool    ok              = false;
+    int32_t playerInterface = -1;
+    int32_t propRenderer    = -1;
+    int32_t slotInv         = -1;
+    int32_t slotTexts       = -1;
+    int32_t iconNames       = -1;
+    int32_t rendererPhases  = -1;
+    int32_t texsGameInst    = -1;
+    int32_t texParams       = -1;   // UMaterialInstance.TextureParameterValues
+    int32_t texParamStride  = 0;    // = sizeof(FTextureParameterValue)
+    int32_t texParamInfo    = -1;   // FMaterialParameterInfo (its first member is FName Name)
+    int32_t texParamValue   = -1;   // UTexture*
+};
+
+Offsets g_off;
+void*   g_matInstClass = nullptr;
+void*   g_refreshFn    = nullptr;
+
+// The game instance, cached. Resolving it means a GUObjectArray walk, and `Read` is called from a
+// per-tick reader and from a script-gate callback -- so walking per call is precisely the
+// per-frame full-array scan the hot-path rule forbids. Measured before this cache: 1.0-2.5 ms per
+// tick, 44 times in one run, every one of them after the edge had already fired.
+ue_wrap::CachedObjRef g_gameInstance;
+
+void* GameInstance() {
+    if (g_gameInstance.Alive()) return g_gameInstance.Get();
+    g_gameInstance.Set(R::FindObjectByClass(kGameInst));
+    return g_gameInstance.Get();
+}
+
+bool Resolve() {
+    if (g_off.ok) return true;
+    // Throttled here rather than at each call site: every lookup below is a GUObjectArray walk,
+    // and until the world's classes are loaded they all fail -- which, at the readers' 8 Hz, is a
+    // per-frame full-array scan for the whole time the main menu is up.
+    static std::chrono::steady_clock::time_point s_lastTry{};
+    const auto now = std::chrono::steady_clock::now();
+    if (s_lastTry != std::chrono::steady_clock::time_point{} &&
+        now - s_lastTry < std::chrono::seconds(1))
+        return false;
+    s_lastTry = now;
+
+    void* gmCls = R::FindClass(P::name::GamemodeClass);
+    void* uiCls = R::FindClass(kUiClass);
+    void* ppCls = R::FindClass(kPropProc);
+    void* giCls = R::FindClass(kGameInst);
+    g_matInstClass = R::FindClass(kMatInst);
+    if (!gmCls || !uiCls || !ppCls || !giCls || !g_matInstClass) return false;
+
+    Offsets o;
+    o.playerInterface = R::FindPropertyOffset(gmCls, L"playerInterface");
+    o.propRenderer    = R::FindPropertyOffset(gmCls, L"propRenderer");
+    o.slotInv         = R::FindPropertyOffset(uiCls, L"slotInv");
+    o.slotTexts       = R::FindPropertyOffset(uiCls, L"slotTexts");
+    o.iconNames       = R::FindPropertyOffset(ppCls, L"names");
+    o.rendererPhases  = R::FindPropertyOffset(ppCls, L"fins");
+    o.texsGameInst    = R::FindPropertyOffset(giCls, L"texs_GAMEINST");
+    o.texParams       = R::FindPropertyOffset(g_matInstClass, L"TextureParameterValues");
+    // TextureParameterValues is an ARRAY property, so PropertyInnerStruct (which reads
+    // FStructProperty::Struct) cannot reach its element type. The element is a plain engine
+    // UScriptStruct, so it is looked up by name -- still resolved, never a hardcoded stride.
+    if (void* elem = R::FindObject(L"TextureParameterValue", L"ScriptStruct")) {
+        o.texParamStride = R::StructSize(elem);
+        o.texParamInfo   = R::FindPropertyOffset(elem, L"ParameterInfo");
+        o.texParamValue  = R::FindPropertyOffset(elem, L"ParameterValue");
+    }
+    g_refreshFn = R::FindFunction(uiCls, kRefreshFn);
+
+    if (o.playerInterface < 0 || o.propRenderer < 0 || o.slotInv < 0 || o.slotTexts < 0 ||
+        o.iconNames < 0 || o.texsGameInst < 0 || o.texParams < 0 || o.texParamStride <= 0 ||
+        o.texParamInfo < 0 || o.texParamValue < 0 || !g_refreshFn) {
+        static bool s_said = false;
+        if (!s_said) {
+            s_said = true;
+            UE_LOGW("hotbar: unresolved -- the quick-slot icon edge is inert (playerInterface=%d "
+                    "propRenderer=%d slotInv=%d slotTexts=%d names=%d texs=%d texParams=%d "
+                    "stride=%d info=%d value=%d verb=%p)",
+                    o.playerInterface, o.propRenderer, o.slotInv, o.slotTexts, o.iconNames,
+                    o.texsGameInst, o.texParams, o.texParamStride, o.texParamInfo, o.texParamValue,
+                    g_refreshFn);
+        }
+        return false;
+    }
+    o.ok = true;
+    g_off = o;
+    return true;
+}
+
+FIO::TArrayView ArrayAt(const void* base, int32_t off) {
+    FIO::TArrayView v{nullptr, 0, 0};
+    if (!base || off < 0) return v;
+    const uint8_t* p = static_cast<const uint8_t*>(base) + off;
+    v.data = *reinterpret_cast<uint8_t* const*>(p);
+    v.num  = *reinterpret_cast<const int32_t*>(p + 8);
+    v.max  = *reinterpret_cast<const int32_t*>(p + 12);
+    // A TArray caught mid-realloc, or an uninitialised slot, must read as empty rather than send
+    // the walk below into arbitrary memory.
+    if (!v.data || v.num < 0 || v.num > 4096) { v.data = nullptr; v.num = 0; }
+    return v;
+}
+
+}  // namespace
+
+bool Read(State& out) {
+    if (!Resolve()) return false;
+    void* gm = ue_wrap::sleep::Gamemode();
+    if (!gm) return false;
+
+    State s;
+    s.ui       = *reinterpret_cast<void* const*>(static_cast<uint8_t*>(gm) + g_off.playerInterface);
+    s.renderer = *reinterpret_cast<void* const*>(static_cast<uint8_t*>(gm) + g_off.propRenderer);
+    if (s.ui && R::IsLive(s.ui)) {
+        s.slots     = ArrayAt(s.ui, g_off.slotInv).num;
+        s.slotTexts = ArrayAt(s.ui, g_off.slotTexts).num;
+    } else {
+        s.ui = nullptr;
+    }
+    if (s.renderer && R::IsLive(s.renderer)) {
+        s.iconNames = ArrayAt(s.renderer, g_off.iconNames).num;
+        if (g_off.rendererPhases >= 0)
+            s.rendererPhases = *reinterpret_cast<const int32_t*>(
+                static_cast<uint8_t*>(s.renderer) + g_off.rendererPhases);
+    } else {
+        s.renderer = nullptr;
+    }
+    // texs_GAMEINST lives on the GAME INSTANCE, which outlives the world: that is why a second
+    // world load in one process finds the icons already built and never shows this defect.
+    if (void* gi = GameInstance()) s.iconTextures = ArrayAt(gi, g_off.texsGameInst).num;
+    s.carried = INV::LivePersonalStoreCount();
+
+    out = s;
+    return true;
+}
+
+std::wstring SlotTexture(const State& s, int i) {
+    if (!g_off.ok || !s.ui || i < 0 || i >= s.slots || !R::IsLive(s.ui)) return std::wstring();
+    const FIO::TArrayView slots = ArrayAt(s.ui, g_off.slotInv);
+    if (i >= slots.num) return std::wstring();
+    void* img = reinterpret_cast<void* const*>(slots.data)[i];
+    if (!img || !R::IsLive(img)) return std::wstring();
+
+    const uint8_t* brush = static_cast<const uint8_t*>(img) + P::off::UImage_Brush;
+    void* res = *reinterpret_cast<void* const*>(brush + P::off::FSlateBrush_ResourceObject);
+    if (!res || !R::IsLive(res)) return L"no-material";
+    // Only a material instance carries the parameter array; the designer's own material does not,
+    // and a slot still holding it has never been through a rebuild.
+    bool isMat = false;
+    for (void* c = R::ClassOf(res); c; c = R::SuperStructOf(c))
+        if (c == g_matInstClass) { isMat = true; break; }
+    if (!isMat) return L"no-material";
+
+    const FIO::TArrayView params = ArrayAt(res, g_off.texParams);
+    for (int j = 0; j < params.num; ++j) {
+        const uint8_t* e = params.data + static_cast<size_t>(j) * g_off.texParamStride;
+        const R::FName& pn = *reinterpret_cast<const R::FName*>(e + g_off.texParamInfo);
+        if (!R::NameEquals(pn, kTexParam)) continue;
+        void* tex = *reinterpret_cast<void* const*>(e + g_off.texParamValue);
+        return tex ? R::ToString(R::NameOf(tex)) : L"null";
+    }
+    return L"no-parameter";
+}
+
+bool BuiltWithoutIcons(const State& s) {
+    if (!s.IconsReady() || s.carried <= 0 || s.slots <= 0) return false;
+    // updateSlotInv fills from the END of the item list down to slot 0, so slot 0 carries an icon
+    // whenever the bar lists anything at all -- it is the one slot a correct rebuild always
+    // reaches, and the one whose emptiness therefore means the rebuild found no icons.
+    const std::wstring tex = SlotTexture(s, 0);
+    return tex == L"Black" || tex == L"null" || tex == L"no-parameter" || tex == L"no-material";
+}
+
+bool Rebuild(const State& s) {
+    if (!g_off.ok || !g_refreshFn || !s.ui || !R::IsLive(s.ui)) return false;
+    ue_wrap::ParamFrame f(g_refreshFn);
+    return f.valid() && ue_wrap::Call(s.ui, f);
+}
+
+void Tick() {
+    static int s_ticks = 0;
+    if (++s_ticks < kPollTicks) return;
+    s_ticks = 0;
+
+    // Latched per WORLD, on the renderer instance: it is spawned with the world, so a new world
+    // brings a new pointer and the edge arms itself again without a level-load callback.
+    static void* s_firedFor = nullptr;
+
+    // The latch is tested on two pointer reads, BEFORE the full state read. An edge that fires
+    // once per world must cost nothing for the rest of that world, and the first cut of this
+    // function read everything first and tested afterwards -- which is how it went on paying
+    // 1 ms a tick for work whose answer could not change.
+    if (!Resolve()) return;
+    void* gm = ue_wrap::sleep::Gamemode();
+    if (!gm) return;
+    void* renderer = *reinterpret_cast<void* const*>(static_cast<uint8_t*>(gm) + g_off.propRenderer);
+    if (!renderer || renderer == s_firedFor) return;
+
+    State s;
+    if (!Read(s)) return;
+    if (!s.renderer || s.renderer == s_firedFor) return;
+    if (!BuiltWithoutIcons(s)) return;
+
+    s_firedFor = s.renderer;
+    const std::wstring before = SlotTexture(s, 0);
+    const bool ok = Rebuild(s);
+    State after;
+    Read(after);
+    UE_LOGI("hotbar: the icon tables arrived after the bar was built (names=%d texs=%d phases=%d "
+            "carried=%d) -- rebuilt through updateSlotInv: called=%d, slot0 %ls -> %ls",
+            s.iconNames, s.iconTextures, s.rendererPhases, s.carried, ok ? 1 : 0, before.c_str(),
+            SlotTexture(after, 0).c_str());
+}
+
+}  // namespace ue_wrap::hotbar

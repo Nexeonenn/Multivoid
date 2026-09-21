@@ -83,6 +83,15 @@ struct LivePersonalStore {
 // on a save object whose world does not exist yet.
 bool ReadLivePersonalStore(LivePersonalStore& out);
 
+// How many records the live personal store holds RIGHT NOW, without decoding any of them: the
+// slot's TArray count alone. -1 when the save object or the slot is unresolvable.
+//
+// It exists because ReadLivePersonalStore interns every FName into a string, which is far too much
+// to run from inside a Blueprint body -- and "how many records were in the store at the instant
+// the game refreshed the quick-slot bar" is a question that can only be asked from in there. Pure
+// field reads. Game thread.
+int32_t LivePersonalStoreCount();
+
 // The WRITE side, the apply on join: overwrite the player's GObjStack slot, equipment and hold
 // on `saveSlot` with `inv`, as engine-OWNED TArrays built through reflection::EngineAlloc (FNames
 // interned, FStrings engine-minted, UClasses FindClass'd). The caller writes the REGISTERED save

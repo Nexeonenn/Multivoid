@@ -358,6 +358,7 @@ set(VOTVCOOP_SOURCES
     src/coop/dev/store_table_probe.cpp
     src/coop/dev/order_selftest.cpp
     src/ue_wrap/actors/inventory.cpp
+    src/ue_wrap/hotbar/icons.cpp
     src/ue_wrap/actors/save_record.cpp
     src/coop/world/email_sync.cpp
     src/coop/net/blob_chunks.cpp
