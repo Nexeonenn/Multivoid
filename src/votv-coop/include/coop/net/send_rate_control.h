@@ -4,12 +4,12 @@
 // from the ping and thereafter only clamps it, so a link past a few milliseconds of ping runs at
 // the configured floor for its whole life. This module measures what replaces it -- the goodput
 // the peer acknowledges, and a round trip timed on the lane the pose stream rides -- and DECIDES
-// the rate from it; the session writes that rate to the connection. A busy link reports once a
-// second, an idle one is probed slowly and silently, because a baseline taken only under load is
-// the queue it is meant to reveal. This is the ONLY writer of a send rate: `net.ratecontrol=0`
-// leaves the transport at its stock rate and `net.sendrate_kbs` pins a fixed one, and neither is a
-// fallback, because the behaviour they restore was the defect. The law, the two refuted before it
-// and the measurements that separate them are in docs/send-path.md.
+// the rate from it. An idle link is probed slowly and silently, because a baseline taken only
+// under load is the queue it is meant to reveal. This is the only place a rate is DECIDED: the
+// two writes are `connection_tuning`'s opening one and the session's per-decision one, and both
+// carry a value from here. `net.ratecontrol=0` leaves the transport at its stock rate and
+// `net.sendrate_kbs` pins a fixed one; neither is a fallback, because the behaviour they restore
+// was the defect. The law, the two refuted before it and their measurements: docs/send-path.md.
 //
 // Threading: three byte counters are atomics written at the send and receive choke points from
 // whichever thread reached them, and a fourth ARMS a slot's teardown. The rest is net-thread-only.
@@ -51,7 +51,8 @@ public:
 
     // The envelope. The floor is an honest minimum -- a join on a link that thin is slow, not
     // broken. The ceiling is the save pump's own output, the biggest producer in the tree:
-    // kChunksPerTick x kSaveChunkBytes at 60 Hz. A rate above it paces nothing that exists.
+    // kChunksPerTick (coop/save/save_transfer.cpp) x kSaveChunkBytes (coop/net/protocol.h) at
+    // 60 Hz. A rate above it paces nothing that exists.
     static constexpr int64_t kFloorBps   = 32 * 1024;
     static constexpr int64_t kCeilingBps = 4LL * 56 * 1024 * 60;
 
@@ -157,8 +158,8 @@ public:
     // The send of a minted probe failed. Expected, not exceptional: with the send buffer at the
     // brim -- the state a bulk transfer creates -- every new message is refused, probes included.
     void NoteProbeRefused(int slot, uint32_t token);
-    // An echo came back. The round trip is measured against OUR record of when that token went out,
-    // never against the sentMs the reply carries, so a wrong or hostile echo cannot invent one.
+    // An echo came back. The round trip is measured against OUR record of when that token went out;
+    // the payload is the token alone and carries no time, so an echo has none to invent one from.
     void NoteProbeReply(int slot, const LinkProbePayload& reply, uint64_t nowMs);
 
     // The rate this slot's link should now be paced at, or -1 when there is nothing to write --

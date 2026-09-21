@@ -3,8 +3,8 @@
 // The transport admits a message only while a connection's pending bytes plus that message fit the
 // send buffer, and that sum is connection-wide: a bulk stream at the brim refuses the unreliable
 // pose and voice datagrams beside it, and the probe that times the path they ride. This rule bounds
-// OUR contribution to that brim -- every reliable send but the probe pair stops short of a reserve
-// -- and a SECOND bound, in TIME, holds the unqueued path to a budget of this link's own measured
+// OURS -- every reliable send but the probe pair and the join beacon stops short of a reserve --
+// and a SECOND bound, in TIME, holds the unqueued path to a budget of this link's own measured
 // delivery, because bytes inside the transport can be neither retracted nor reordered. Neither
 // guarantees room: a NACKed segment is re-queued into pending with no admission check, so on a
 // lossy link it passes the buffer size from outside while we add nothing. A send this rule refuses
@@ -12,7 +12,7 @@
 //
 // The occupancy compared is an estimate, re-anchored on the transport's own pending total at each
 // link sample: high when a drain went unseen, which is the safe direction, and low by a bounded
-// amount, both corrected at the next anchor. Both bounds' measurements are in docs/send-path.md
+// amount, both corrected at the next anchor. Both bounds' measurements are in docs/send-path.md.
 
 #pragma once
 

@@ -58,14 +58,14 @@ bool EnsureGnsInit() {
     }
     // NOTHING GLOBAL SETS THE SEND RATE ANY MORE. This is where a 1 MiB/s floor and a 25 MiB/s
     // ceiling used to be written for every connection on both topologies, on the premise that a
-    // raised floor protects the unreliable pose stream from a saturated reliable burst. Both
-    // halves were measured wrong: the floor was the RATE on every link a player has, since the
-    // transport writes its estimate once at connect and thereafter only clamps it, and it shields
-    // nothing either -- what starves a pose datagram is the shared send buffer, and a reliable
-    // retransmission is gathered ahead of the lane-priority loop. The rate is now per connection
-    // and measured -- `coop/net/send_rate_control` decides it, `coop/net/connection_tuning` opens
-    // it -- so a global write here would be a second writer of a quantity that has an owner.
-    // docs/send-path.md carries the measurements.
+    // raised floor protects the unreliable pose stream from a saturated reliable burst. Both were
+    // measured wrong: the floor was the RATE on every link a player has, since the transport writes
+    // its estimate once at connect and thereafter only clamps it, and it shields nothing -- what
+    // starves a pose datagram is the shared send buffer, and a reliable retransmission is gathered
+    // ahead of the lane-priority loop. The ceiling needed an init ping under 0.17 ms that nothing
+    // ever measured. The rate is now per connection and measured: `coop/net/send_rate_control`
+    // decides it and `coop/net/connection_tuning` opens it, so a global write here would be a
+    // second writer of a quantity that has an owner. docs/send-path.md carries the measurements.
     //
     // The overdrive drill knob is the one thing still written globally, and correctly so: it
     // simulates a thin outbound link with the transport's send policer, which silently drops
