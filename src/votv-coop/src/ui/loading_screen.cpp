@@ -2,6 +2,7 @@
 
 #include "ui/loading_screen.h"
 
+#include "coop/net/protocol.h"  // HostJoinPhase -- the beacon's phase, as the View carries it
 #include "coop/session/join_progress.h"
 #include "ui/scale.h"
 
@@ -122,6 +123,14 @@ void Render() {
             // progress out of the engine's load -- so it gets the marquee, which at
             // least animates, and a label that is true.
             std::snprintf(status, sizeof(status), "Loading the world%s", d);
+        } else if (v.phase == jp::Phase::AwaitingWorldStream) {
+            // The world is up and the wait belongs to the host now. Say which side is working, and
+            // say the one thing the host reports that the player cannot otherwise see: that it is
+            // holding the stream until its own world settles.
+            if (v.hostPhase == static_cast<uint8_t>(coop::net::HostJoinPhase::SnapshotDeferred))
+                std::snprintf(status, sizeof(status), "The host is settling its world%s", d);
+            else
+                std::snprintf(status, sizeof(status), "Waiting for the host's world%s", d);
         } else {
             std::snprintf(status, sizeof(status), "Receiving world from the host");
         }

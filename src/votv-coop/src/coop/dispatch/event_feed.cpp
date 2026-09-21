@@ -328,6 +328,26 @@ void Update(net::Session& session, void* localPlayer) {
             ue_wrap::game_thread::Post([args] { ::coop::teleport_client::ApplyLocally(args); });
             break;
         }
+        case net::ReliableKind::JoinPhaseNote: {
+            // The host's once-a-second word on the phase of this join it is working. Host-only: a
+            // client must not be able to hold another client's join open. The value is renewed by
+            // the ARRIVAL, so a note whose phase byte this build does not know still counts.
+            if (msg.payloadLen < sizeof(net::JoinPhaseNotePayload)) {
+                UE_LOGW("event_feed: JoinPhaseNote payload too short (%zu < %zu)",
+                        static_cast<size_t>(msg.payloadLen), sizeof(net::JoinPhaseNotePayload));
+                break;
+            }
+            if (msg.senderPeerSlot != 0) {
+                UE_LOGW("event_feed: JoinPhaseNote from non-host senderPeerSlot=%d -- dropping",
+                        msg.senderPeerSlot);
+                break;
+            }
+            if (session.role() == net::Role::Host) break;  // self-echo guard
+            net::JoinPhaseNotePayload p{};
+            std::memcpy(&p, msg.payload, sizeof(p));
+            coop::join_progress::NoteHostBeacon(p.phase, p.done, p.total);
+            break;
+        }
         case net::ReliableKind::SnapshotBegin: {
             // The host opened the connect snapshot: the client's loading screen becomes a
             // determinate "Receiving world X/N" bar. Host-only: a client must not spoof another's

@@ -83,6 +83,7 @@
 #include "coop/dev/lightswitch_probe.h"
 #include "coop/dev/perf_probe.h"
 #include "coop/save/save_transfer.h"
+#include "coop/session/join_beacon.h"
 #include "coop/interactables/grime_sync.h"
 #include "coop/interactables/interactable_sync.h"
 #include "coop/interactables/atv_sync.h"
@@ -362,6 +363,9 @@ void DisconnectSlot(coop::net::Session& session, int slot) {
     // Drop any in-flight save stream and close the world-ready send gate for the departed slot; a
     // rejoin re-opens both fresh.
     coop::save_transfer::CancelForSlot(slot);
+    // Nothing to beacon to a peer that left; a recycled slot must start silent rather than
+    // inherit the departed joiner's phase.
+    coop::join_beacon::CancelForSlot(slot);
     session.MarkSlotWorldReady(slot, false);
     // A slot teardown is a roster row transition: the leaver's half assemblies and seed brackets
     // must not survive into a recycled occupant.
@@ -407,6 +411,7 @@ DisconnectStats DisconnectAll() {
     DisconnectStats stats;
     stats.initProcessedDropped = coop::prop_lifecycle::OnDisconnect().initProcessedDropped;
     stats.snapPending = coop::prop_snapshot::OnDisconnect();
+    coop::join_beacon::OnDisconnect();
     coop::npc_sync::OnDisconnect();
     coop::world_actor_sync::OnDisconnect();  // drain WorldActor mirrors (K2 client ones) + clear host reverse-map
     coop::piramid_sync::OnDisconnect();  // drop pending gather + gather-edge map + restored-tick set (hooks stay latched)

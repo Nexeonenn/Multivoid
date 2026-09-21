@@ -2,6 +2,7 @@
 
 #include "coop/session/join_progress.h"
 
+#include "coop/net/protocol.h"  // HostJoinPhase -- naming what the host said it was doing
 #include "ui/join_curtain.h"  // drop the curtain on a join abort (not the normal complete path)
 #include "coop/session/rig_ready.h"
 #include "coop/session/shutdown.h"  // IsShuttingDown -- suppress the failure dialog during teardown
@@ -9,6 +10,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <cstdio>
 #include <mutex>
 #include <string>
 
@@ -34,6 +36,18 @@ std::atomic<int64_t>  g_startMs{0};
 // When the current phase, or the current stage inside Connecting, began: the screen shows the
 // seconds spent in it once they add up, so a step that is merely slow reads as still working.
 std::atomic<int64_t>  g_stageStartMs{0};
+// When this phase's token last advanced: a received byte, an applied prop, a host beacon, or the
+// phase itself beginning. The watchdog reads the age of this and nothing else.
+std::atomic<int64_t>  g_tokenMs{0};
+// The host's last beacon: its phase for the screen, its numerator so a bracket that is streaming
+// renews the wait even while this client applies nothing (every candidate can be a skip).
+std::atomic<uint8_t>  g_hostPhase{0};
+std::atomic<uint32_t> g_hostDone{0};
+std::atomic<uint32_t> g_hostTotal{0};
+std::atomic<uint32_t> g_hostBeacons{0};  // beacons heard this attempt; the join's closing line reports it
+// When the last beacon ARRIVED. Not a failure trigger -- only the word the failure line uses, so a
+// report can tell a host that went quiet from one that answered all along and got nowhere.
+std::atomic<int64_t>  g_hostBeaconMs{0};
 std::atomic<bool>     g_abortReq{false};  // Cancel button OR a connect failure -> harness drains (Stop + reopen browser)
 
 std::mutex  g_hostMu;
@@ -59,6 +73,10 @@ constexpr int64_t kMaxJoinMs = 240'000;
 // stuck cover at the menu is worse than dropping it). Host mode just resets: no Fail, since
 // there is no client session to stop.
 constexpr int64_t kMaxHostBootMs = 180'000;
+// How recently a beacon must have arrived for a failure to read as "the host is stuck" rather than
+// "the host went quiet". Three times the beacon's own second, so one dropped note does not change
+// the sentence.
+constexpr int64_t kBeaconFreshMs = 3'000;
 
 int64_t NowMs() {
     return std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -67,6 +85,62 @@ int64_t NowMs() {
 }
 
 Phase PhaseOf() { return static_cast<Phase>(g_phase.load(std::memory_order_relaxed)); }
+
+// The token advanced (or a phase began, which is its first advance). One store.
+void StampToken() { g_tokenMs.store(NowMs(), std::memory_order_relaxed); }
+
+// What each phase waits on, and for how long. A budget of 0 means this phase is not watched from
+// here. The numbers are per PHASE, not per join: each is "this step has produced nothing for this
+// long", so a slow link and a mature world cost time in the step, never the budget.
+struct PhaseWatch {
+    int64_t    budgetMs;
+    EndReason  code;
+    const char* detail;
+};
+
+PhaseWatch WatchFor(Phase ph, Stage st) {
+    switch (ph) {
+    case Phase::Connecting:
+        // Only the wait for the host's world: the dial, the route and the identity exchange have
+        // their own reasons from the transport, and an in-gameplay join (Stage::Joining) is waiting
+        // for a bracket it will ask for at world-ready, not for a world to be prepared.
+        if (st == Stage::WaitingForWorld)
+            return {30'000, EndReason::HostWorldNotPrepared, "the host never finished preparing its world"};
+        return {0, EndReason::None, ""};
+    case Phase::Downloading:
+        return {20'000, EndReason::WorldDownloadStalled, "no byte of the world arrived"};
+    // LoadingWorld: local, opaque and owned by the boot loop -- watching it here would put a
+    // network clock on an engine level load.
+    case Phase::AwaitingWorldStream:
+    case Phase::Receiving:
+        return {30'000, EndReason::HostWorldNotSent, "the host never sent the world it owed"};
+    default:
+        return {0, EndReason::None, ""};
+    }
+}
+
+// The host's own phases, for the one line a field log needs: what the other side said it was
+// doing. Kept beside the client's phase names so a reader sees both vocabularies at once.
+const char* HostPhaseName(uint8_t p) {
+    switch (static_cast<coop::net::HostJoinPhase>(p)) {
+    case coop::net::HostJoinPhase::CapturingWorld:    return "capturing its world";
+    case coop::net::HostJoinPhase::StreamingWorld:    return "streaming its world";
+    case coop::net::HostJoinPhase::SnapshotDeferred:  return "holding the bracket until its world settles";
+    case coop::net::HostJoinPhase::StreamingSnapshot: return "streaming the bracket";
+    }
+    return "in a phase this build does not know";
+}
+
+const char* PhaseName(Phase p) {
+    switch (p) {
+    case Phase::Connecting:          return "Connecting";
+    case Phase::Downloading:         return "Downloading";
+    case Phase::LoadingWorld:        return "LoadingWorld";
+    case Phase::AwaitingWorldStream: return "AwaitingWorldStream";
+    case Phase::Receiving:           return "Receiving";
+    default:                         return "Idle";
+    }
+}
 
 const char* StageName(Stage s) {
     switch (s) {
@@ -103,6 +177,11 @@ void ResetCounters() {
     g_dlDone.store(0, std::memory_order_relaxed);
     g_dlTotal.store(0, std::memory_order_relaxed);
     g_abortReq.store(false, std::memory_order_relaxed);
+    g_hostPhase.store(0, std::memory_order_relaxed);
+    g_hostDone.store(0, std::memory_order_relaxed);
+    g_hostTotal.store(0, std::memory_order_relaxed);
+    g_hostBeacons.store(0, std::memory_order_relaxed);
+    g_hostBeaconMs.store(0, std::memory_order_relaxed);
 }
 
 }  // namespace
@@ -120,6 +199,7 @@ void BeginConnect(const std::string& hostLabel, Stage first) {
     const int64_t now = NowMs();
     g_startMs.store(now, std::memory_order_relaxed);
     g_stageStartMs.store(now, std::memory_order_relaxed);
+    g_tokenMs.store(now, std::memory_order_relaxed);
     g_stage.store(static_cast<int>(first), std::memory_order_relaxed);
     g_phase.store(static_cast<int>(Phase::Connecting), std::memory_order_release);
     UE_LOGI("join_progress: BeginConnect -- loading screen up (connecting to '%s', stage %s)",
@@ -138,6 +218,7 @@ void BeginHostBoot(const std::string& worldLabel) {
     const int64_t now = NowMs();
     g_startMs.store(now, std::memory_order_relaxed);
     g_stageStartMs.store(now, std::memory_order_relaxed);
+    g_tokenMs.store(now, std::memory_order_relaxed);
     g_stage.store(static_cast<int>(Stage::None), std::memory_order_relaxed);
     g_phase.store(static_cast<int>(Phase::Connecting), std::memory_order_release);
     UE_LOGI("join_progress: BeginHostBoot -- host loading cover up (loading world '%s'); menu hidden",
@@ -151,6 +232,7 @@ void NoteStage(Stage stage) {
     if (g_stage.load(std::memory_order_relaxed) == want) return;
     g_stage.store(want, std::memory_order_relaxed);
     g_stageStartMs.store(NowMs(), std::memory_order_relaxed);
+    StampToken();  // a new stage waits on its own token, not on the one before it
     UE_LOGI("join_progress: stage %s", StageName(stage));
 }
 
@@ -166,11 +248,13 @@ void BeginSnapshot(uint32_t propTotal) {
     // replay arrives, and omitting them would leave the prop bar dead for every menu-mode join.
     const Phase ph = PhaseOf();
     if (ph != Phase::Connecting && ph != Phase::Downloading &&
-        ph != Phase::LoadingWorld && ph != Phase::Receiving) return;
+        ph != Phase::LoadingWorld && ph != Phase::AwaitingWorldStream &&
+        ph != Phase::Receiving) return;
     g_total.store(propTotal, std::memory_order_relaxed);
     g_applied.store(0, std::memory_order_relaxed);
     if (g_startMs.load(std::memory_order_relaxed) == 0) g_startMs.store(NowMs(), std::memory_order_relaxed);
     g_stageStartMs.store(NowMs(), std::memory_order_relaxed);
+    StampToken();
     g_phase.store(static_cast<int>(Phase::Receiving), std::memory_order_release);
     UE_LOGI("join_progress: BeginSnapshot -- receiving world (%u objects)", propTotal);
 }
@@ -190,11 +274,16 @@ void NoteDownload(uint32_t doneBytes, uint32_t totalBytes) {
                                         std::memory_order_acq_rel,
                                         std::memory_order_relaxed)) {
         g_stageStartMs.store(NowMs(), std::memory_order_relaxed);
+        StampToken();
         UE_LOGI("join_progress: Downloading -- world blob %u bytes", totalBytes);
     } else if (expected != static_cast<int>(Phase::Downloading)) {
         return;  // the phase moved out from under us -- write nothing
     }
-    // Only now, with the phase confirmed ours, are the counters ours to write.
+    // Only now, with the phase confirmed ours, are the counters ours to write. The token advances
+    // on a byte that ARRIVED, never on the poll that reports the same number again: this loop calls
+    // in at 60 Hz whether or not the link is carrying anything, so a store per call would make the
+    // watchdog measure the poll instead of the transfer.
+    if (doneBytes > g_dlDone.load(std::memory_order_relaxed)) StampToken();
     g_dlDone.store(doneBytes > totalBytes ? totalBytes : doneBytes, std::memory_order_relaxed);
     g_dlTotal.store(totalBytes, std::memory_order_relaxed);
 }
@@ -210,15 +299,55 @@ void BeginWorldLoad() {
                                             std::memory_order_acq_rel,
                                             std::memory_order_relaxed)) {
             g_stageStartMs.store(NowMs(), std::memory_order_relaxed);
+            StampToken();
             UE_LOGI("join_progress: LoadingWorld -- blob in, engine loading it");
             return;
         }
     }
 }
 
+void NoteWorldReady() {
+    if (g_mode.load(std::memory_order_relaxed) != static_cast<int>(Mode::Client)) return;
+    // The same compare-exchange discipline as the other transitions, accepting both predecessors:
+    // a menu-mode join arrives from the engine load, an in-gameplay join never left connecting
+    // because it downloaded and loaded nothing.
+    for (const Phase from : {Phase::LoadingWorld, Phase::Connecting}) {
+        int expected = static_cast<int>(from);
+        if (g_phase.compare_exchange_strong(expected, static_cast<int>(Phase::AwaitingWorldStream),
+                                            std::memory_order_acq_rel,
+                                            std::memory_order_relaxed)) {
+            g_stageStartMs.store(NowMs(), std::memory_order_relaxed);
+            StampToken();
+            UE_LOGI("join_progress: AwaitingWorldStream -- world up and announced; the host owes the bracket");
+            return;
+        }
+    }
+}
+
+void NoteHostBeacon(uint8_t phase, uint32_t done, uint32_t total) {
+    if (!Active()) return;
+    if (g_mode.load(std::memory_order_relaxed) != static_cast<int>(Mode::Client)) return;
+    const uint8_t  was = g_hostPhase.exchange(phase, std::memory_order_relaxed);
+    const uint32_t wasDone = g_hostDone.exchange(done, std::memory_order_relaxed);
+    g_hostTotal.store(total, std::memory_order_relaxed);
+    g_hostBeacons.fetch_add(1, std::memory_order_relaxed);
+    g_hostBeaconMs.store(NowMs(), std::memory_order_relaxed);
+    // One line per CHANGE, never per beacon: four lines in a whole join, and they are the only
+    // record anywhere of what the host was doing while this joiner waited.
+    if (was != phase)
+        UE_LOGI("join_progress: the host is %s (%u/%u)", HostPhaseName(phase), done, total);
+    // THE TOKEN IS PROGRESS, NOT ARRIVAL. A beacon repeating the same phase with the same number
+    // says the host is alive, which is worth knowing and is not worth waiting on: renewing the
+    // wait on it lets a host that is stuck hold a joiner forever, which is the failure the whole
+    // watchdog exists to end (measured: a host holding its bracket kept a joiner waiting out 125
+    // beacons and 120 seconds). A phase that changed, or a numerator that moved, IS progress.
+    if (was != phase || done > wasDone) StampToken();
+}
+
 void NotePropApplied() {
     if (PhaseOf() != Phase::Receiving) return;  // free outside a join
     const uint32_t total = g_total.load(std::memory_order_relaxed);
+    StampToken();  // a prop applied IS the bracket's progress token
     const uint32_t cur = g_applied.fetch_add(1, std::memory_order_relaxed) + 1;
     if (cur > total) g_applied.store(total, std::memory_order_relaxed);  // clamp (live spawns during the window)
 }
@@ -235,7 +364,8 @@ void Complete() {
     g_dlTotal.store(0, std::memory_order_relaxed);
     g_stage.store(static_cast<int>(Stage::None), std::memory_order_relaxed);
     g_phase.store(static_cast<int>(Phase::Idle), std::memory_order_release);
-    UE_LOGI("join_progress: Complete -- loading screen down (applied %u/%u)", applied, total);
+    UE_LOGI("join_progress: Complete -- loading screen down (applied %u/%u, %u host beacons heard)",
+            applied, total, g_hostBeacons.load(std::memory_order_relaxed));
     coop::rig_ready::Say("joined");
 }
 
@@ -347,6 +477,7 @@ View Snapshot() {
     v.totalBytes = g_dlTotal.load(std::memory_order_relaxed);
     const int64_t stageStart = g_stageStartMs.load(std::memory_order_relaxed);
     v.stageMs = (stageStart == 0) ? 0 : static_cast<uint64_t>(NowMs() - stageStart);
+    v.hostPhase = g_hostPhase.load(std::memory_order_relaxed);
     {
         std::lock_guard<std::mutex> lk(g_hostMu);
         v.host = g_host;
@@ -367,6 +498,38 @@ void MaybeTimeout() {
                     static_cast<long long>(kMaxHostBootMs / 1000));
             Reset();
         }
+        return;
+    }
+    // The phase watchdog, ahead of the failsafe because it is the one that can say WHAT stopped.
+    // Fail is idempotent and first-notice-wins, so whichever fires first owns the dialog.
+    const Phase ph = PhaseOf();
+    const PhaseWatch w = WatchFor(ph, static_cast<Stage>(g_stage.load(std::memory_order_relaxed)));
+    const int64_t token = g_tokenMs.load(std::memory_order_relaxed);
+    if (w.budgetMs > 0 && token != 0 && NowMs() - token > w.budgetMs) {
+        // The two ways a phase dies read differently in a report, so they read differently here:
+        // a host that went quiet, and a host that answered every second and got nowhere. Both name
+        // the phase, which is the whole difference from the guess this replaces.
+        const int64_t now = NowMs();
+        const long long stuckS = static_cast<long long>((now - token) / 1000);
+        const int64_t beaconMs = g_hostBeaconMs.load(std::memory_order_relaxed);
+        const uint8_t hp = g_hostPhase.load(std::memory_order_relaxed);
+        char detail[224];
+        if (hp != 0 && beaconMs != 0 && now - beaconMs <= kBeaconFreshMs) {
+            std::snprintf(detail, sizeof(detail),
+                          "%s: the host says it is %s and nothing has moved in %llds (%u/%u)",
+                          PhaseName(ph), HostPhaseName(hp), stuckS,
+                          g_hostDone.load(std::memory_order_relaxed),
+                          g_hostTotal.load(std::memory_order_relaxed));
+        } else if (hp != 0) {
+            std::snprintf(detail, sizeof(detail),
+                          "%s: the host was %s and stopped answering %llds ago",
+                          PhaseName(ph), HostPhaseName(hp),
+                          static_cast<long long>((now - beaconMs) / 1000));
+        } else {
+            std::snprintf(detail, sizeof(detail), "%s: %s, and the host never answered at all",
+                          PhaseName(ph), w.detail);
+        }
+        Fail(w.code, detail);
         return;
     }
     if (NowMs() - start > kMaxJoinMs) {

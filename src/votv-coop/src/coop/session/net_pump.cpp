@@ -15,6 +15,7 @@
 #include "coop/dev/perf_probe.h"
 #include "coop/element/element_deleter.h"
 #include "coop/dispatch/event_feed.h"
+#include "coop/session/join_beacon.h"
 #include "coop/session/join_progress.h"
 #include "coop/player/local_streams.h"
 #include "ui/multiplayer_menu.h"  // MenuTickFn(): the death-flee bypass release condition
@@ -417,6 +418,10 @@ void Tick(coop::net::Session& session) {
                 // The same reset for the deferred prop divergence sweep: one armed for the prior
                 // world must not fire against this one.
                 coop::join_membership_sweep::OnClientWorldReadyResetSweep();
+                // The join's wait changes owner here: this client has a world, and everything left
+                // is the host's bracket. Named so, the cover stops saying "loading the world" over
+                // a wait that is the host's, and the phase gets a watchdog of its own.
+                coop::join_progress::NoteWorldReady();
                 UE_LOGI("net_pump: ClientWorldReady announced (world up + registry coherent + load "
                         "tail quiesced%s)",
                         reAnnounce ? " -- re-announce after world-change" : "");
@@ -527,6 +532,13 @@ void Tick(coop::net::Session& session) {
     // Up to ~100 snapshot candidates per tick while an enumeration is in progress (a no-op on
     // empty).
     if (isConnected && worldUp) { PP::Scope _s{PP::Bucket::SnapshotDrain}; coop::prop_snapshot::DrainChunk(); }
+
+    // The host's once-a-second word to each joiner, after the three owners of a join's host-side
+    // phases have had their pass (the chunk pump above, the capture inside it, the bracket drain
+    // just now). Ungated by worldUp: a host serving a joiner is by definition in a world, and the
+    // gate exists for the joiner's own menu ticks. A no-op on a client and for every slot nobody
+    // worked this pass, which is how the beacon falls silent when the work stops.
+    if (isHost) coop::join_beacon::Tick();
 
     // The per-tick gameplay subsystem chain (connect-broadcast drains, module polls and applies,
     // NPC streams, dev probes), world-up-gated whole: every one acts on gameplay-world state, and a

@@ -41,6 +41,9 @@ constexpr Row kRows[] = {
     {EndReason::LeftSession,         {"MV-J18", "Left the session."}},
     {EndReason::RendezvousUnreachable, {"MV-J19", "This machine has no working connection to the signaling server, so the host could not be dialled."}},
     {EndReason::NoRendezvousAnswer,    {"MV-J20", "The host did not answer through the signaling server. It may be offline, or reconnecting -- try again in a minute."}},
+    {EndReason::HostWorldNotPrepared,  {"MV-J21", "The host never finished preparing its world for you."}},
+    {EndReason::WorldDownloadStalled,  {"MV-J22", "The download of the host's world stopped part way through."}},
+    {EndReason::HostWorldNotSent,      {"MV-J23", "The host never sent you the world it owed."}},
     // H -- the host decided
     {EndReason::WrongPassword,           {"MV-H01", "Wrong password."}},
     {EndReason::PasswordRequired,        {"MV-H02", "This server needs a password."}},

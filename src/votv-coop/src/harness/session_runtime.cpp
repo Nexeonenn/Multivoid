@@ -37,6 +37,7 @@
 #include "coop/props/prop_snapshot.h"
 #include "coop/save/save_guard.h"
 #include "coop/save/save_transfer.h"
+#include "coop/session/join_beacon.h"
 #include "coop/session/join_progress.h"
 #include "coop/player/death_revive.h"
 #include "coop/player/run_end_travel.h"
@@ -434,6 +435,7 @@ bool StartCoopSession(const coop::net::Config& netCfg) {
     coop::prop_lifecycle::SetSession(&g_session);
     coop::npc_sync::SetSession(&g_session);
     coop::prop_snapshot::SetSession(&g_session);
+    coop::join_beacon::SetSession(&g_session);
     coop::dev::restore_vitals::SetSession(&g_session);
     coop::teleport_client::SetSession(&g_session);
     coop::dev::force_weather::SetSession(&g_session);

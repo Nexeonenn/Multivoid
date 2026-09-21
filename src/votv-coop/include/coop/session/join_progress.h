@@ -42,6 +42,12 @@ enum class Phase : int {
     // hung signal than the marquee this replaced; three names for four real stages produced
     // that, and the fourth name is the fix.
     LoadingWorld,
+    // The world is up and this client has announced world-ready: everything from here is the
+    // host's to send. A phase of its own because the wait has a different owner and a different
+    // failure -- under LoadingWorld's label a joiner waiting on a host that deferred its bracket
+    // read as "still loading" for four minutes, and the screen blamed the wrong side. An
+    // in-gameplay join, which never downloads or loads anything, enters here directly.
+    AwaitingWorldStream,
     Receiving,    // BeginSnapshot..Complete: streaming the world, determinate bar
 };
 
@@ -76,6 +82,7 @@ struct View {
     uint32_t doneBytes = 0;  // world blob received so far (0 outside Downloading)
     uint32_t totalBytes = 0; // world blob size from SaveTransferBegin (0 until it lands)
     uint64_t stageMs = 0;   // in the current phase, or stage while Connecting: the "still working"
+    uint8_t  hostPhase = 0;  // the host's last beacon (net::HostJoinPhase); 0 = none heard yet
 };
 
 // What the end-reason modal shows: the code, the site's own text beside it, and whether the
@@ -109,6 +116,19 @@ void NoteDownload(uint32_t doneBytes, uint32_t totalBytes);
 // before the blocking world load. A no-op unless a client join is in flight in a phase this
 // can legally follow.
 void BeginWorldLoad();
+
+// This client announced world-ready: the wait is the host's from here (its bracket, deferred or
+// streaming). Driven by the pump at the announce. Accepts LoadingWorld (a menu-mode join whose
+// world just came up) and Connecting (an in-gameplay join, which never downloaded or loaded
+// anything); a no-op in any other phase and outside a client join.
+void NoteWorldReady();
+
+// The host's once-a-second beacon for this joiner arrived: `phase` is a net::HostJoinPhase and
+// `done`/`total` its numerator and denominator. Two things happen -- the phase is kept for the
+// screen, and the ARRIVAL renews the current phase's wait, which is what lets a join wait on the
+// host's own word instead of on a clock. An unknown phase value still renews it: a beacon this
+// build cannot label is still proof the host is answering. From the event feed, game thread.
+void NoteHostBeacon(uint8_t phase, uint32_t done, uint32_t total);
 
 // Driven by the harness, host only. Raise the cover for a host boot: hides the menu (so the
 // player cannot wander into the browser and self-join while the world loads) and shows the
@@ -161,9 +181,17 @@ bool Active();        // phase != Idle (the cover should be drawn)
 Phase CurrentPhase(); // one atomic load; stages are forwarded only while Connecting
 View Snapshot();      // thread-safe copy of the current state
 
-// The failsafe, the MTA connect timeout's analogue: if a join has been active far longer than
-// any real snapshot takes, log once and reset, so the player sees the game rather than a
-// trapped cover. Called each frame from the render path; cheap and idempotent.
+// The phase watchdogs, and behind them the whole-join failsafe.
+//
+// Each phase waits on a TOKEN that must keep advancing -- a byte of the download, a prop of the
+// bracket, or the host's beacon saying it is still working -- and fails with a reason naming that
+// phase when it stops. Phases whose legitimate durations are independent and additive cannot share
+// one budget: the failsafe below spans the dial, the host's capture, the download, the engine's
+// world load and the bracket, so all it can ever say is that the sum ran long, which is the guess
+// the field dialog was printing. The engine's world load is deliberately NOT watched here: it is
+// local and opaque, and the boot loop owns its cap.
+//
+// Called each frame from the render path; cheap and idempotent.
 void MaybeTimeout();
 
 }  // namespace coop::join_progress

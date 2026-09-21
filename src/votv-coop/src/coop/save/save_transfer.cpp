@@ -17,6 +17,7 @@
 #include "coop/props/prop_element_tracker.h"  // the blob-versus-live key diff
 #include "coop/props/save_identity_bind.h"  // the client's eid-range bind
 #include "coop/props/save_identity_map.h"  // the host's keyless index-to-eid map
+#include "coop/session/join_beacon.h"  // the joiner hears which phase this stream is in
 #include "coop/save/save_guard.h"
 #include "coop/save/save_indicator_suppress.h"  // detect the SAVED HUD across the join scratch save
 #include "ue_wrap/engine/engine.h"      // the host's current prop position
@@ -564,6 +565,10 @@ void TickHost() {
         if (!hs.active) continue;
         if (!hs.blobReady) {
             TryCaptureBlob_(slot, hs);
+            // The joiner is on a cover with nothing else to read: a capture that retries for its
+            // stable read is working, and only this says so. No numerator -- the read restarts
+            // whenever the file moves under it, so there is no honest fraction to report.
+            coop::join_beacon::NotePhase(slot, coop::net::HostJoinPhase::CapturingWorld, 0, 0);
             continue;
         }
         // Begin first, success-gated: the pacing lane refuses under backpressure and the next tick
@@ -593,6 +598,17 @@ void TickHost() {
                 break;  // send-buffer backpressure (or slot dropped) -- retry next tick
             }
             ++hs.nextChunk;
+        }
+        // Bytes this host has handed to the transport for this joiner, against the blob's size.
+        // Its own quantity, not the joiner's: the two differ by whatever is in flight, which is
+        // what a joiner comparing them can see for the first time.
+        {
+            const uint64_t handed =
+                static_cast<uint64_t>(hs.nextChunk) * coop::net::kSaveChunkBytes;
+            const uint64_t size = hs.blob.size();
+            coop::join_beacon::NotePhase(slot, coop::net::HostJoinPhase::StreamingWorld,
+                                         static_cast<uint32_t>(handed < size ? handed : size),
+                                         static_cast<uint32_t>(size));
         }
         if (hs.nextChunk >= hs.chunkCount) {
             UE_LOGI("save_transfer: slot %d stream complete (%u chunks)", slot, hs.chunkCount);

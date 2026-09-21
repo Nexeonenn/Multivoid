@@ -226,6 +226,12 @@ CFG_INT(desk_diag_ms, "desk_diag_ms", "dev", 1000, 100, 60000, nullptr,
     "Interval in milliseconds for the desk_diag log.")
 CFG_INT(vitals_keepalive_sec, "vitals_keepalive_sec", "dev", 0, 0, 86400, nullptr,
     "Reset player vitals every N seconds (0 = off; long unattended test runs).")
+CFG_INT(hold_snapshot_sec, "hold_snapshot_sec", "dev", 0, 0, 600,
+    "VOTVCOOP_DEV_HOLD_SNAPSHOT_SEC",
+    "Host testing knob: defer each joiner's world bracket for N seconds before sending it "
+    "(0 = off). Reproduces the one host-side wait nothing else can stage -- a joiner with a "
+    "healthy link and a world, waiting on a bracket the host is holding. Under the joiner's "
+    "budget the join still completes; over it, it fails naming the host's phase.")
 CFG_FLAG(window_log, "window_log", "dev", false, nullptr,
     "Diagnostic logging for window sync.")
 CFG_FLAG(window_synth, "window_synth", "dev", false, nullptr,

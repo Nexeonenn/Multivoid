@@ -30,7 +30,7 @@ inline constexpr uint32_t kMagic = 0x564D5450u;
 // This file is past the 1500-line hard cap and stays there: it is the single-feature exception the
 // rule names. One wire format, whose enum, payload structs and static_asserts are read together;
 // splitting it would put a kind's number in one file and its bytes in another.
-inline constexpr uint16_t kProtocolVersion = 168;
+inline constexpr uint16_t kProtocolVersion = 169;
 
 // Default LAN port (overridable via multivoid.ini "net.port=").
 inline constexpr uint16_t kDefaultPort = 47621;
@@ -727,6 +727,18 @@ enum class ReliableKind : uint8_t {
     // LinkProbePayload, both directions.
     LinkProbe = 141,
     LinkProbeReply = 142,
+
+    // Host to ONE joiner, once a second, while the host is doing a phase of that join: what it is
+    // doing and how far in. The joiner waits on this token instead of on a wall clock, so a phase
+    // that is merely slow reads as working and a host that went silent is named as the side that
+    // stopped -- the failure dialog used to guess "lost SnapshotComplete or a stalled drain" from a
+    // 240 s budget and nothing else. Explicitly sent while a snapshot is DEFERRED, the one state
+    // whose silence no other message covers. High lane and exempt from the send buffer's headroom
+    // reserve: the buffer is at the brim exactly while the world blob streams, which is when the
+    // joiner most needs to hear the host. Trust: host-authored, never relayed, and the joiner only
+    // ever reads it as "still working" -- a forged one cannot lengthen a budget past its own phase.
+    // Late join: nothing to replay, it describes a join in flight. JoinPhaseNotePayload.
+    JoinPhaseNote = 143,
 };
 
 #pragma pack(push, 1)
@@ -2628,6 +2640,29 @@ struct LinkProbePayload {
     uint32_t token;    // the prober's per-slot probe counter, non-zero
 };
 static_assert(sizeof(LinkProbePayload) == 4, "LinkProbePayload must be 4 bytes");
+
+// The phases of a join the HOST owns, and therefore the ones whose silence only the host can
+// explain. The joiner's own phases (its download, its engine load) are watched on its own side
+// from what it can see. A value this receiver does not know is still a beacon: it proves the host
+// is answering, which is the token, so an unknown phase renews the wait and only its label is
+// dropped.
+enum class HostJoinPhase : uint8_t {
+    CapturingWorld = 1,    // reading the host's save to a stable blob (no numerator: it retries until stable)
+    StreamingWorld = 2,    // handing the blob to the transport: bytes accepted / blob bytes
+    SnapshotDeferred = 3,  // the bracket is held because the host's registry does not express its world
+    StreamingSnapshot = 4, // draining the connect bracket: props sent / candidates
+};
+
+// The beacon itself. `done` and `total` are the phase's own numerator and denominator, both 0 for a
+// phase that has none; the joiner reads a rising `done` as progress and the message's ARRIVAL as
+// liveness, so a phase with no numerator still renews the wait.
+struct JoinPhaseNotePayload {
+    uint8_t  phase;    // HostJoinPhase
+    uint8_t  _pad[3];  // reserved, zero
+    uint32_t done;
+    uint32_t total;
+};
+static_assert(sizeof(JoinPhaseNotePayload) == 12, "JoinPhaseNotePayload must be 12 bytes");
 
 #pragma pack(pop)
 

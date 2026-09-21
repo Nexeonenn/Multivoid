@@ -16,6 +16,8 @@
 #include "coop/props/prop_save_data.h"
 #include "coop/props/pile_look.h"
 #include "coop/props/prop_element_tracker.h"
+#include "coop/config/config_registry.h"  // [dev] hold_snapshot_sec, the held-bracket drill
+#include "coop/session/join_beacon.h"  // a deferred or draining bracket says so, once a second
 #include "coop/props/prop_wire_parity.h"  // PhysFlagsOf
 #include "coop/props/prop_lifecycle.h"
 #include "coop/props/remote_prop.h"
@@ -33,6 +35,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <cstring>
 #include <string>
@@ -155,6 +158,33 @@ void ClearDrainState_() {
 // Dequeues through TriggerForSlot until a drain starts or the queue empties: a not-ready slot is
 // dropped, an incoherent-registry one defers, and the loop goes on, so one dead slot cannot stall
 // the rest of the queue.
+// [dev] hold_snapshot_sec: the one host-side wait no other drill can stage. A joiner with a
+// healthy link and a loaded world, waiting on a bracket this host is holding, is the shape the
+// failure dialog used to guess at; a knob that produces it on demand is what lets the joiner's
+// answer be measured instead of argued. Per slot, steady-clock milliseconds; 0 = not held here.
+// Its expiry re-triggers the slot itself, because the tree's only retry today is a world
+// transition -- which is the defect, and not something the instrument should have to stage.
+int64_t g_drillHoldUntilMs[coop::players::kMaxPeers]{};
+
+int64_t NowMsSteady_() {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+               std::chrono::steady_clock::now().time_since_epoch())
+        .count();
+}
+
+// True while the drill is holding this slot's bracket; arms the deadline on the first ask.
+bool DrillHoldsSlot_(int peerSlot) {
+    const long holdSec =
+        coop::config::ResolveInt(coop::config_registry::rows::hold_snapshot_sec);
+    if (holdSec <= 0) return false;
+    const int64_t now = NowMsSteady_();
+    if (g_drillHoldUntilMs[peerSlot] == 0)
+        g_drillHoldUntilMs[peerSlot] = now + static_cast<int64_t>(holdSec) * 1000;
+    if (now < g_drillHoldUntilMs[peerSlot]) return true;
+    g_drillHoldUntilMs[peerSlot] = 0;
+    return false;
+}
+
 void DequeuePending_() {
     while (g_currentTargetSlot == -1 && !g_pendingSlots.empty()) {
         const int next = g_pendingSlots.front();
@@ -328,6 +358,12 @@ void TriggerForSlot(int peerSlot) {
         UE_LOGW("snapshot: slot %d not ready (lanes not yet configured) -- deferring TriggerForSlot", peerSlot);
         return;
     }
+    if (DrillHoldsSlot_(peerSlot)) {
+        g_deferredSlots[peerSlot] = true;
+        g_deferredSeenGen = PT::SeedGeneration();
+        UE_LOGW("snapshot: [dev] hold_snapshot_sec -- HOLDING slot %d's bracket", peerSlot);
+        return;
+    }
     // A bracket is a destructive contract (the client destroys every unclaimed in-universe local at
     // SnapshotComplete), so it may only be built from a registry that expresses the host's current
     // world. Any of three signals defers: the boot seed never ran; the stamped UWorld was purged (a
@@ -370,6 +406,16 @@ void DrainChunk() {
     // TriggerForSlot re-defers if a second travel raced in. Before the no-drain early-out (the only
     // per-tick call site); idle cost is a scan of the flags.
     if (AnyDeferred_()) {
+        // A deferred slot is the one host-side wait no message covered: the joiner has a world, the
+        // link is healthy, and the bracket it is waiting for is being held here. Say so every pass,
+        // so the wait is a wait and not a silence.
+        for (int slot = 1; slot < coop::players::kMaxPeers; ++slot) {
+            if (!g_deferredSlots[slot]) continue;
+            coop::join_beacon::NotePhase(slot, coop::net::HostJoinPhase::SnapshotDeferred, 0, 0);
+            // The drill's own release: a slot it held is retried the moment its deadline passes.
+            if (g_drillHoldUntilMs[slot] != 0 && NowMsSteady_() >= g_drillHoldUntilMs[slot])
+                TriggerForSlot(slot);
+        }
         const uint64_t gen = PT::SeedGeneration();
         if (gen != g_deferredSeenGen) {
             g_deferredSeenGen = gen;
@@ -409,6 +455,9 @@ void DrainChunk() {
         CompleteDrainForCurrentSlot(s);
         return;
     }
+    coop::join_beacon::NotePhase(g_currentTargetSlot, coop::net::HostJoinPhase::StreamingSnapshot,
+                                 g_snapshotSentTotal,
+                                 static_cast<uint32_t>(g_snapshotCandidates.size()));
     // (std::min) parenthesised against windows.h's macro.
     const size_t limit = (std::min)(g_snapshotCandidateIdx + kSnapshotChunkSize,
                                     g_snapshotCandidates.size());
@@ -543,6 +592,7 @@ void CancelForSlot(int peerSlot) {
     // A slot that disconnects while deferred is not retried; cleared before the in-progress check.
     if (peerSlot >= 1 && peerSlot < coop::players::kMaxPeers) {
         g_deferredSlots[peerSlot] = false;
+        g_drillHoldUntilMs[peerSlot] = 0;  // a recycled slot is not still being held
     }
     // Out of the pending queue (queued, then disconnected before its turn).
     g_pendingSlots.erase(

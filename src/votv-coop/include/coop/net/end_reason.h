@@ -44,6 +44,13 @@ enum class EndReason : uint8_t {
     // the joiner can tell them apart from what it owns, and only these two rows say so.
     RendezvousUnreachable,  // this machine had no connection to the relay while it dialled
     NoRendezvousAnswer,     // our registration was live and the dialled host never answered
+    // The three phase tokens. Each names the PHASE that stopped; whether the host went quiet or
+    // answered all along and got nowhere is the detail's job, since both end the same wait and a
+    // player quotes the code. This is what JoinTimedOut could not do: one budget over every phase
+    // can only ever say that the sum ran long.
+    HostWorldNotPrepared,   // the host never finished capturing the world it owed this joiner
+    WorldDownloadStalled,   // no byte of the world blob arrived for the download's budget
+    HostWorldNotSent,       // the world bracket never came: the host held it, or stopped answering
 
     // H -- the host decided; rides the transport's application end reason. Values 40..89.
     WrongPassword = 40,
@@ -86,7 +93,7 @@ enum class EndReason : uint8_t {
     // Each family's bounds, for the table's completeness check: a family is contiguous from its
     // first enumerator, so the row count must equal the sum of the three spans.
     kJoinerFirst = MasterUnreachable,
-    kJoinerLast = NoRendezvousAnswer,
+    kJoinerLast = HostWorldNotSent,
     kHostFirst = WrongPassword,
     kHostLast = ConnectFlood,
     kTransportFirst = Timeout,

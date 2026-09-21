@@ -213,6 +213,22 @@ rebuilds it on a fresh connection. It is the ANSWER that counts, not traffic: a 
 that socket says nothing about whether the relay still knows the host's name. A host whose registration dies therefore repairs itself, with the world and the
 session kept, and re-hosting is not the remedy.
 
+### A phase that stops, rather than a join that runs long
+
+Each phase of a join waits on a token that has to keep advancing, and fails naming that phase when
+it stops: a byte of the download, a prop of the bracket, or the host's own once-a-second
+`JoinPhaseNote` saying which phase it is working and how far in. The host beacons while it captures
+its world, while it streams it, while it drains the bracket, and -- the case nothing else covers --
+while it is HOLDING the bracket because its own registry does not yet express its world. The
+joiner's screen names the side that is working, and a failure names the phase, whether the host went
+quiet or answered every second and got nowhere.
+
+A beacon on its own is liveness, not progress. A host repeating one phase with the same numerator is
+alive and stuck, and the wait ends on its budget all the same: measured, a host holding its bracket
+kept a joiner waiting through 125 beacons and two minutes before this rule, and ends it at thirty
+seconds after. The engine's own world load is deliberately unwatched from here -- it is local and
+opaque, and the boot loop owns its cap.
+
 ### When a join ends early
 
 A join that cannot be established, and a session that ends after it, both close with a modal:
@@ -243,6 +259,9 @@ end reason, so both ends log one code; `T` the transport.
 | `MV-J18` | This peer stopped its own session; the host logs it, the leaver never sees it |
 | `MV-J19` | This machine was never registered with the relay at any point of the dial; it names no fault of the host's |
 | `MV-J20` | The relay answered this machine's own name within one probe interval, and the host never answered at all |
+| `MV-J21` | The host never finished preparing its world; it went quiet, or kept saying it was capturing and got nowhere |
+| `MV-J22` | No byte of the world blob arrived for twenty seconds |
+| `MV-J23` | The world bracket never came: the host held it, or stopped answering |
 | `MV-H01` | Wrong password |
 | `MV-H02` | This server needs a password |
 | `MV-H03` | Too many password attempts; try again in ten minutes |
@@ -339,6 +358,7 @@ and it is the reason the relay's own silence stays.
 | `SaveTransferRequest`, `SaveTransferBegin`, `SaveTransferChunk` | client, then host | the request; total bytes, sidecar bytes, checksum, game mode; the chunks |
 | `PlayerInventoryBlob` | both | the per-player profile, pre-world |
 | `ClientWorldReady` | client to host | once per world, at quiescence |
+| `JoinPhaseNote` | host to one client | once a second while the host is working a phase of this join: which phase, and how far in |
 | `SnapshotBegin`, `PropSpawn`, `PropSnapPos`, `PropDestroy`, `SnapshotComplete` | host to one client | the bracket |
 | `EventSnapshot` | host to one client | one per in-flight event |
 | `ChatLine` | host to one client | the retained chat record, one line each |
@@ -371,6 +391,7 @@ not raise the game's own active-event counter, whose save and pause blocks the m
 | A host change inside the window that post-dates the snapshot (a kerfur turned off) materialises at quiescence, after the curtain has lifted, as a visible pop-in | `[V]` `coop/element/mirror_defer` holds it until quiescence |
 | A local save-loaded actor repositioned after the curtain lifts is visible: the curtain lifts at the end marker, before quiescence, a short curtain being chosen over a blank screen | `[V]` `ui/join_curtain` |
 | The stale fallback streams the on-disk slot, which may be older than the live world | `[V]` `coop/save/save_transfer` logs it |
+| A whole-join failsafe still stands behind the phase tokens, and is still one budget over phases whose durations are independent; it is the backstop for a phase no token covers, not the timeout a joiner should ever meet | `[V]` `coop/session/join_progress` |
 | The divergence sweep aborts at its half-of-the-world valve and leaves the joiner's excess keyed props in place, unbound | `[V]` `coop/props/join_membership_sweep` |
 
 ## Code map

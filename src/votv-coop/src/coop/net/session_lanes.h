@@ -33,8 +33,13 @@ inline bool IsAdmissionKind(ReliableKind k) {
 // link probe is the measurement of the round trip those datagrams take: holding it back would
 // blind the one instrument that can see the reserve working. Bounded by construction -- 32 bytes,
 // a bounded number outstanding -- so what it takes from the reserve is not worth counting.
+// The join beacon is exempt for the same reason in the other direction: it is the joiner's only
+// evidence that the host is still working, and the state it reports on -- a world blob streaming
+// through the send buffer -- is exactly the state that holds the buffer at the brim. Held back, it
+// would go quiet precisely when its silence means a failed join. Twelve bytes once a second.
 inline bool IsReserveExemptKind(ReliableKind k) {
-    return k == ReliableKind::LinkProbe || k == ReliableKind::LinkProbeReply;
+    return k == ReliableKind::LinkProbe || k == ReliableKind::LinkProbeReply ||
+           k == ReliableKind::JoinPhaseNote;
 }
 
 inline Lane LaneForKind(ReliableKind k) {
@@ -45,6 +50,10 @@ inline Lane LaneForKind(ReliableKind k) {
     // the probe it answers.
     case ReliableKind::LinkProbe:      return Lane::High;
     case ReliableKind::LinkProbeReply: return Lane::High;
+    // The join beacon rides High for the reason it exists: on Bulk it would queue behind the very
+    // world blob whose progress it reports, and arrive as news about a minute ago. Ordered against
+    // nothing -- it carries no state, only what the host is doing now.
+    case ReliableKind::JoinPhaseNote:  return Lane::High;
     case ReliableKind::TeleportClient: return Lane::High;
     case ReliableKind::RestoreVitals:  return Lane::High;
     case ReliableKind::ItemActivate:   return Lane::High;
@@ -278,6 +287,9 @@ inline bool IsPreWorldSendableKind(ReliableKind k) {
     // measured, and both are answered on the net thread and touch no world.
     case ReliableKind::LinkProbe:
     case ReliableKind::LinkProbeReply:
+    // The join beacon is pre-world by definition: every phase it reports happens before the joiner
+    // has a world, and the receiver only stamps a timestamp and two numbers.
+    case ReliableKind::JoinPhaseNote:
     // PropDriveEnd stays gated: it names a prop by eid, which a joiner has only after its world is up,
     // and the world-ready replay re-sends every driven prop's pose in any case.
         return true;
