@@ -54,6 +54,17 @@ long IntFromRaw(const config_registry::Row* row, bool have, const std::string& r
 float FloatFromRaw(const config_registry::Row* row, bool have, const std::string& raw);
 std::string EnumFromRaw(const config_registry::Row* row, bool have, const std::string& raw);
 
+// The layered raw-value pick: a set env wins, valid or not (garbage env shadows the ini); else
+// the ini's authoritative line; else absent. True with `raw` when a layer supplied a value, and
+// `fromEnvOut` says which layer won. The census reports the layer, so it asks the precedence
+// rule itself rather than re-reading the environment and risking a second, disagreeing answer.
+bool PickRawLayered(const config_registry::Row* row, std::string& raw,
+                    bool* fromEnvOut = nullptr);
+
+// C-locale numeric emission for a float row's value, so the catalog's default and the census's
+// resolved value are the same string on any machine. Defined in config_example.cpp.
+std::string FormatFloat(float v);
+
 // The ONE atomic-swap file writer (.new + checked writes + MoveFileExW),
 // shared with the T8 catalog generator (config_example.cpp; arc 4) -- never a
 // second swap implementation. Defined in config_ini_write.cpp.

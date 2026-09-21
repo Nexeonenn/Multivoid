@@ -133,6 +133,13 @@ enum class ExampleGen : unsigned char {
 // mod never reads this file back. Once at boot, after EnsureIniSkeleton.
 void GenerateExampleCatalog();
 
+// Say what this launch is actually configured with: one line per registry row a layer supplied,
+// carrying the resolved value and the layer that won, then an end line with the count. Once at
+// boot, after MigrateRetiredIniValues, so the census reports the state everything else will read.
+// The line text is a contract with tools outside the tree -- a drill asserts its own independent
+// variables against it, since a run whose setting silently did not take measures the wrong build.
+void ReportEffectiveConfig();
+
 // Retire a stored value a shipped bug wrote; once at boot, after EnsureIniSkeleton. A migration
 // rather than a new default: browser.lastdirect once prefilled the direct-connect box with
 // 127.0.0.1:7777, Unreal's default port and never ours (a host listens on

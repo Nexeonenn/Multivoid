@@ -106,6 +106,10 @@ DWORD WINAPI TimelineThread(LPVOID param) {
     // Stored values a shipped bug wrote are retired (config.h): exact-match, one-shot, and before
     // anything reads the rows it touches.
     cfg::MigrateRetiredIniValues();
+    // Every row a layer supplied, with the value as resolved and the layer that won. It runs here
+    // because this is the first moment the rows read what they will read all launch, and a drill
+    // waits on it to prove the run is measuring the configuration it asked for.
+    cfg::ReportEffectiveConfig();
     // The local nickname from config (the env twin, the ini, the registry default), so the browser
     // shows the current name; the browser value wins at session start.
     {

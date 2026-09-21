@@ -555,15 +555,22 @@ bool MasterEnabled() {
 
 // The typed layered reads (config.h).
 
-namespace {
+// The per-kind validate-and-default cores, in internal:: so the selftest TU shares the exact
+// product semantics: one core for the live resolve and its instrument.
+namespace internal {
 
-// The layered raw-value pick: a set env wins, valid or not (garbage env shadows the ini); else the
-// ini's authoritative line; else absent. True with `raw` when a layer supplied a value. The row
-// comes from the caller's typed handle, so no lookup and no unregistered key.
-bool PickRawLayered(const config_registry::Row* row, std::string& raw) {
+// The layered raw-value pick (config_internal.h). The row comes from the caller's typed handle,
+// so no lookup and no unregistered key; the census passes a row straight off the table, which is
+// the one caller that has no handle and needs none.
+bool PickRawLayered(const config_registry::Row* row, std::string& raw, bool* fromEnvOut) {
+    if (fromEnvOut) *fromEnvOut = false;
     if (row->envVar) {
         const std::string e = ReadEnv(row->envVar);
-        if (!e.empty()) { raw = e; return true; }
+        if (!e.empty()) {
+            raw = e;
+            if (fromEnvOut) *fromEnvOut = true;
+            return true;
+        }
     }
     static const char* kAbsent = "\x01<absent>";
     const std::string v = ReadIniValue(row->key, kAbsent);
@@ -571,12 +578,6 @@ bool PickRawLayered(const config_registry::Row* row, std::string& raw) {
     raw = v;
     return true;
 }
-
-}  // namespace
-
-// The per-kind validate-and-default cores, in internal:: so the selftest TU shares the exact
-// product semantics: one core for the live resolve and its instrument.
-namespace internal {
 
 bool FlagFromRaw(const config_registry::Row* row, bool have, const std::string& raw) {
     if (!have) return row->defB;
@@ -638,31 +639,31 @@ int ScanWithInjectedFailure(int failAfterLines) {
 
 bool ResolveFlag(const config_registry::FlagRow& h) {
     std::string raw;
-    const bool have = PickRawLayered(h.row, raw);
+    const bool have = internal::PickRawLayered(h.row, raw);
     return internal::FlagFromRaw(h.row, have, raw);
 }
 
 long ResolveInt(const config_registry::IntRow& h) {
     std::string raw;
-    const bool have = PickRawLayered(h.row, raw);
+    const bool have = internal::PickRawLayered(h.row, raw);
     return internal::IntFromRaw(h.row, have, raw);
 }
 
 float ResolveFloat(const config_registry::FloatRow& h) {
     std::string raw;
-    const bool have = PickRawLayered(h.row, raw);
+    const bool have = internal::PickRawLayered(h.row, raw);
     return internal::FloatFromRaw(h.row, have, raw);
 }
 
 std::string ResolveEnum(const config_registry::EnumRow& h) {
     std::string raw;
-    const bool have = PickRawLayered(h.row, raw);
+    const bool have = internal::PickRawLayered(h.row, raw);
     return internal::EnumFromRaw(h.row, have, raw);
 }
 
 std::string ResolveString(const config_registry::StringRow& h) {
     std::string raw;
-    if (!PickRawLayered(h.row, raw)) return h.row->defS;
+    if (!internal::PickRawLayered(h.row, raw)) return h.row->defS;
     return raw;
 }
 

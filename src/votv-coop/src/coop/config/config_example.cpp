@@ -47,12 +47,6 @@ _locale_t CLocale() {
     return loc;
 }
 
-std::string FormatFloat(float v) {
-    char buf[48];
-    _snprintf_s_l(buf, sizeof(buf), _TRUNCATE, "%.9g", CLocale(), static_cast<double>(v));
-    return buf;
-}
-
 std::string FormatDouble(double v) {
     char buf[48];
     _snprintf_s_l(buf, sizeof(buf), _TRUNCATE, "%.9g", CLocale(), v);
@@ -88,7 +82,7 @@ std::string DefaultValueOf(const config_registry::Row& r) {
         case Kind::Int:
             std::snprintf(buf, sizeof(buf), "%ld", r.defI);
             return buf;
-        case Kind::Float: return FormatFloat(r.defF);
+        case Kind::Float: return internal::FormatFloat(r.defF);
         case Kind::Enum:
         case Kind::String: return r.defS ? r.defS : "";
         case Kind::Identity: return "";  // minted -- the copyable line stays valueless
@@ -169,6 +163,17 @@ IniScan ReadWholeFile(const std::wstring& path, std::string& bytes) {
 }
 
 }  // namespace
+
+// The catalog's own float emission, shared with the effective-config census (config_internal.h):
+// a row's default and a peer's resolved value have to be the same string, or a rig comparing them
+// reads a locale as a difference.
+namespace internal {
+std::string FormatFloat(float v) {
+    char buf[48];
+    _snprintf_s_l(buf, sizeof(buf), _TRUNCATE, "%.9g", CLocale(), static_cast<double>(v));
+    return buf;
+}
+}  // namespace internal
 
 void GenerateExampleCatalog() {
     const std::wstring dir = ue_wrap::paths::ExeDir();
