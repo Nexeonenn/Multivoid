@@ -243,7 +243,7 @@ end reason, so both ends log one code; `T` the transport.
 | `MV-J02` | The server list gave a bad address for this host |
 | `MV-J03` | The join failed before it started; the log has the error |
 | `MV-J04` | Could not start the connection |
-| `MV-J05` | The join did not finish in time (the cover's failsafe) |
+| `MV-J05` | RETIRED. It was the whole-join failsafe, deleted in WP-B2; the code is never reissued, because a code in a field report has to keep meaning what it meant |
 | `MV-J06` | The game is shutting down (never shown) |
 | `MV-J07` | The host plays a different version of the game |
 | `MV-J08` | The host runs a newer build of the mod; update to join |
@@ -262,6 +262,10 @@ end reason, so both ends log one code; `T` the transport.
 | `MV-J21` | The host never finished preparing its world; it went quiet, or kept saying it was capturing and got nowhere |
 | `MV-J22` | No byte of the world blob arrived for twenty seconds |
 | `MV-J23` | The world bracket never came: the host held it, or stopped answering |
+| `MV-J24` | The engine never reached gameplay with the world the host sent |
+| `MV-J25` | The world arrived damaged: its CRC failed, or the slot could not be written |
+| `MV-J26` | The host never sent this player's inventory |
+| `MV-J27` | The world loaded and this machine never got ready to announce it (the gate is named in the detail) |
 | `MV-H01` | Wrong password |
 | `MV-H02` | This server needs a password |
 | `MV-H03` | Too many password attempts; try again in ten minutes |
@@ -391,7 +395,8 @@ not raise the game's own active-event counter, whose save and pause blocks the m
 | A host change inside the window that post-dates the snapshot (a kerfur turned off) materialises at quiescence, after the curtain has lifted, as a visible pop-in | `[V]` `coop/element/mirror_defer` holds it until quiescence |
 | A local save-loaded actor repositioned after the curtain lifts is visible: the curtain lifts at the end marker, before quiescence, a short curtain being chosen over a blank screen | `[V]` `ui/join_curtain` |
 | The stale fallback streams the on-disk slot, which may be older than the live world | `[V]` `coop/save/save_transfer` logs it |
-| A whole-join failsafe still stands behind the phase tokens, and is still one budget over phases whose durations are independent; it is the backstop for a phase no token covers, not the timeout a joiner should ever meet | `[V]` `coop/session/join_progress` |
+| NOTHING stands behind the phase tokens. The whole-join failsafe is deleted (WP-B2): a join ends when a phase's token stops or the transport dies, never because a sum of independent durations crossed a number | `[V]` `coop/session/join_progress`, `docs/NET_SEND_RATE_ARC.md` section 8i |
+| The tokens are driven from `harness::TickPumpWatchdogs`, on the timeline thread, NOT from the render: an overlay that fails to install is non-fatal and the game boots on without it, which would otherwise leave every join budget dead for that session | `[V]` `harness/session_runtime.cpp`, `harness.cpp` logs the non-fatal install failure |
 | The divergence sweep aborts at its half-of-the-world valve and leaves the joiner's excess keyed props in place, unbound | `[V]` `coop/props/join_membership_sweep` |
 
 ## Code map
