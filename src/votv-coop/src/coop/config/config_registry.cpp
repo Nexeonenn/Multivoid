@@ -311,6 +311,29 @@ const char* RetiredKeyNote(const char* key) {
     return nullptr;
 }
 
+// Named rows rather than a spelling rule, so the list has the failure mode of going STALE: a
+// credential row renamed without touching this array stops matching and its value starts reaching
+// the log. CredentialKeys exposes the array so a caller can check each name still resolves to a
+// row, which is a louder failure than a silently unredacted password.
+static const char* const kCredentials[] = {
+    "net.lobby_password",    // the secret a locked lobby requires
+    "net.join_password",     // the secret a joiner offers
+    "net.signaling_token",   // the relay's bearer
+    "net.turn_pass",         // the TURN credential
+};
+
+const char* const* CredentialKeys(size_t& count) {
+    count = sizeof(kCredentials) / sizeof(kCredentials[0]);
+    return kCredentials;
+}
+
+bool IsCredentialKey(const char* key) {
+    if (!key) return false;
+    for (const char* c : kCredentials)
+        if (_stricmp(key, c) == 0) return true;
+    return false;
+}
+
 bool IsKnownKey(const char* key) {
     // Since arc 3 the ui.font.<role> family are REAL rows -- one lookup.
     return FindRow(key) != nullptr;

@@ -92,11 +92,17 @@ bool WriteIniValueAt(const std::wstring& path, const char* key, const char* valu
     for (const char* p = value; *p; ++p)
         if (*p != '\n' && *p != '\r') safe.push_back(*p);
     safe = internal::TrimEdgesStr(safe);
+    // What this function may LOG. The value still goes to the file -- that is the whole job -- but
+    // both lines below name the key and the outcome, and a lobby password printed beside them
+    // outlives the session in every pasted log. Same registry predicate the census asks, so the
+    // tree cannot redact a value in one writer and print it in the other.
+    const char* shown =
+        config_registry::IsCredentialKey(key) ? "<set>" : safe.c_str();
     const char* wantSec = SectionForKey(key);
     if (!ValueValidForKey(key, safe, nullptr)) {
         UE_LOGW("config: WriteIniValue('%s'='%s') REFUSED -- the value would be rejected "
                 "on read (registry kind/range/tokens); not persisting garbage (T3b)",
-                key, safe.c_str());
+                key, shown);
         return false;
     }
     const std::string newLine = std::string(key) + "=" + safe + "\n";
@@ -182,7 +188,7 @@ bool WriteIniValueAt(const std::wstring& path, const char* key, const char* valu
         lines.push_back(newLine);  // headerless/unknown key: today's EOF append
     }
     if (!AtomicWriteLines(path, lines, "WriteIniValue")) return false;
-    UE_LOGI("config: persisted %s=%s", key, safe.c_str());
+    UE_LOGI("config: persisted %s=%s", key, shown);
     return true;
 }
 

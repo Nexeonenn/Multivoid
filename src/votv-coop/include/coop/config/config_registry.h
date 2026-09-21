@@ -104,6 +104,16 @@ bool IsKnownKey(const char* key);
 // panel can say where the setting went.
 const char* RetiredKeyNote(const char* key);
 
+// True if this key's VALUE is a credential and must never reach a log. Named rows, not a guess at
+// the spelling: a substring rule reads `perf_probe_bypass` and `roster_token_selftest` as secrets
+// and would hide two dev settings a drill has to be able to confirm. One predicate for every
+// writer of a value -- the effective-config census and the ini persist log both ask it, so the
+// tree cannot redact in one place and print in the other. CredentialKeys hands out the same list
+// so a caller can check every name still resolves to a row; a rename that misses this array
+// unredacts a password, so the staleness is worth one pass at boot.
+bool IsCredentialKey(const char* key);
+const char* const* CredentialKeys(size_t& count);
+
 // The typed handles.
 
 namespace detail {
