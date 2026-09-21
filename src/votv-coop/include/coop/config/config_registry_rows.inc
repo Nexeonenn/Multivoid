@@ -214,6 +214,12 @@ CFG_STRING(save, "save", "dev", "s_may2026", "VOTVCOOP_SAVE", false,
     "Test framework: the save slot name loaded at auto-start.")
 CFG_FLAG(fresh_boot, "fresh_boot", "dev", false, "VOTVCOOP_FRESH",
     "Test framework: boot to a fresh new-game state instead of loading a save.")
+CFG_FLAG(menu_autoload, "menu_autoload", "dev", false, "VOTVCOOP_MENU_AUTOLOAD",
+    "Test framework: on a NATIVE menu launch, load the `save` slot from a worker once the play "
+    "loop is already ticking -- the route a player takes, which no test scenario reached before, "
+    "since the scenarios that load a world announce themselves as having booted into one. Says "
+    "`rig: READY solo-world` when the world is up. Never on by default: it would load a save "
+    "under a player who asked for the main menu.")
 CFG_FLAG(static_2nd_player, "static_2nd_player", "dev", false, nullptr,
     "Spawn a static second-player puppet for camera/pose testing.")
 CFG_FLAG(freecam, "freecam", "dev", false, nullptr,

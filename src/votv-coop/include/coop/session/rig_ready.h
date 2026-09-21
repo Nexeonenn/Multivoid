@@ -10,6 +10,7 @@
 //   joined             this client's join is over: the host's snapshot is applied and the join
 //                      cover is down. The line to wait on before driving a client
 //   peer-world-ready   the host took a client's ClientWorldReady and is replaying to slot <n>
+//   solo-world         a gameplay world with NO session, from the menu ([dev] menu_autoload)
 // A milestone is said every time it is reached: a client says `world-ready` again after a world
 // change, the host says `peer-world-ready` for every join and rejoin.
 

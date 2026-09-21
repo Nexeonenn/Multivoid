@@ -176,13 +176,18 @@ still answers correctly afterwards. The texture array lives on the game instance
 world, so a second world loaded in the same process finds the icons already built and the question
 costs one comparison.
 
-It does not reach every world yet, and the gap is the ordinary one. The rebuild rides the session's
-tick, and the branch that would carry it in a world with no session is chosen once, from whether the
-process booted straight into gameplay -- so a launch that starts at the main menu, which is every
-launch a player makes, never reaches it however long it then spends in a world. Measured: with the
-library loaded and no session, a first load from the menu left all ten slots on the placeholder and
-the rebuild never ran. The bar is rebuilt today when a session is live, or when a run boots directly
-into a world; a solo load from the menu is the open case.
+It reaches a world with no session as well as one with a session, and for a release it did not. The
+rebuild rides the session's tick, and the branch that carries it in a world with no session was
+chosen once at startup, from whether the process had booted straight into gameplay -- so a launch
+that starts at the main menu, which is every launch a player makes, never reached it however long it
+then spent in a world. Two things were wrong at once. The branch's guard named a state and held a
+boot fact, and it is now two questions: whether this process auto-loaded a world of its own, which
+only the test rigs do, and whether a gameplay world is up right now, which is asked of the module
+that owns world identity every tick. Underneath it, the wrapper that reads the bar borrowed its
+handle on the game mode from the sleep module, whose lookup is driven by a coop session, so off a
+session it answered nothing and every read failed; it resolves its own now. Measured after both: a
+menu launch, a load, no session, and the first slot went from the placeholder to its texture, with
+the two tables published 233 ms apart in that run.
 
 ## Who owns what
 
@@ -214,7 +219,7 @@ scoreboard fills as roster rows arrive; nameplates appear with each puppet's fir
 | The native screens' frames do not yet reproduce the game's bevelled, nested border material; the flat border was measured wrong | `[V]` [votv-ui-style.md](votv-ui-style.md), the frame section |
 | The game's own toasts a client self-generates from diverged world state are not suppressed or mirrored; only the server state behind one family is driven | `[V]` `coop/interactables/serverbox_sync` is the one family |
 | The old ImGui browser is kept as a fallback, a deliberate exception to retiring replaced code | `[V]` `ui/server_browser_surface` |
-| The quick-slot bar's rebuild does not reach a solo world entered from the main menu: the branch carrying it is chosen once, from whether the process booted into gameplay, so an ordinary launch never takes it | `[V]` `harness/session_runtime`, the idle branch; measured with the library loaded and no session, ten slots left on the placeholder |
+| The quick-slot bar's rebuild has been confirmed on a load issued through the game's own load call, not on a click of the menu's Load button; a second load in one process cannot close that, since the texture array survives the world | `[V]` `harness/world_boot`, the same call the button ends at |
 
 ## Code map
 

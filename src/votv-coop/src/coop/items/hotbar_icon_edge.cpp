@@ -63,7 +63,14 @@ void Tick() {
         // Nothing to do, and nothing that can go wrong later: once the icons are published, every
         // rebuild the game runs from here on finds them. Settle, so a world whose player is
         // carrying nothing does not keep asking for the rest of its life.
-        if (s.IconsReady()) g_settled.Set(s.renderer);
+        if (s.IconsReady()) {
+            g_settled.Set(s.renderer);
+            // Said on the settle as well as on the rebuild: a gate that only speaks when it acts
+            // cannot report that it RAN, and this one spent a release unreachable on the launch
+            // every player makes while its own readout was inside the branch that never ran.
+            UE_LOGI("hotbar: the quick-slot bar was built with its icons (names=%d texs=%d "
+                    "carried=%d) -- nothing to rebuild", s.iconNames, s.iconTextures, s.carried);
+        }
         return;
     }
 

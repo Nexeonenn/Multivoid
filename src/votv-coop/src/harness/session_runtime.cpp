@@ -55,6 +55,7 @@
 #include "coop/net/end_reason.h"  // the named reason a join that reached the world load ends on
 #include "ui/server_browser_surface.h"  // WHICH browser this session uses
 #include "ue_wrap/engine/engine.h"
+#include "ue_wrap/engine/world_identity.h"
 #include "ue_wrap/core/game_thread.h"
 #include "ue_wrap/core/object_index.h"
 #include "ue_wrap/core/log.h"
@@ -251,10 +252,7 @@ bool StartCoopSession(const coop::net::Config& netCfg) {
 // The main loop on the TimelineThread. Each tick: with no session running, poll session_manager
 // for a browser-initiated start and boot it here (Start and the save backup must not run on the
 // game thread); post the per-tick pump; ~2 s stats while running. One loop for the env "play"
-// path and the native menu path. `idleInGameplay` names the idle state: solo gameplay (keep the
-// local observers and the roster live) or the main menu (the gameplay classes are not loaded, so
-// the observers install when a session starts). No per-tick world probe: a per-frame
-// object-array scan is the FPS pattern the perf rule forbids, and the scenario flag is free.
+// path and the native menu path.
 namespace {
 
 // The lobby's live player count for the heartbeat, on the announcer's worker thread, so atomics
@@ -268,13 +266,24 @@ int LobbyPlayerCount() {
     return g_session.connectedPeerCount() + 1;
 }
 
+// Is a gameplay world up RIGHT NOW? Asked of the module that owns world identity rather than of
+// a boot parameter, because the two are not the same question and a launch that reaches gameplay
+// later answers them differently. Free to ask: the memo behind it refreshes at 10 Hz on the game
+// thread and every other call is an atomic load, so this is not the per-frame object-array scan
+// the perf rule forbids. Unknown is not Gameplay on purpose -- a gate that STARTS something wants
+// a positive answer, and the kind is legitimately Unknown for about a second across every travel.
+bool InGameplayWorld() {
+    return ue_wrap::world_identity::CurrentWorldKind() ==
+           ue_wrap::world_identity::WorldKind::Gameplay;
+}
+
 }  // namespace
 
 void InstallLobbyPlayerCountSource() {
     coop::session_manager::SetPlayerCountSource(&LobbyPlayerCount);
 }
 
-void RunPlayLoop(bool idleInGameplay) {
+void RunPlayLoop(bool bootedIntoGameplay) {
     int tick = 0;
     bool wasRunning = false;     // the session's running-to-stopped edge
     bool wasHostSession = false;  // and whether the session that was running was the host's
@@ -325,9 +334,13 @@ void RunPlayLoop(bool idleInGameplay) {
                         // player never sees a divergent fresh world. ONE fallback survives: a
                         // host that genuinely has no save, which is an answer and not a timeout.
                         // A failed transfer or a world that will not load ends the join by name.
-                        // Blocks the TimelineThread, the abort drained inside. A join from inside gameplay connects directly, since it
-                        // has a world.
-                        if (pending.role == coop::net::Role::Client && !idleInGameplay) {
+                        // Blocks the TimelineThread, the abort drained inside. The boot fact, not
+                        // a live world test: the direct arm exists for a process that auto-loaded
+                        // its OWN world at boot, which is the LAN rigs, where both peers were given
+                        // the same save. A player who reaches a solo world through the game's menu
+                        // must still download the host's -- their own world is not the one the join
+                        // is about.
+                        if (pending.role == coop::net::Role::Client && !bootedIntoGameplay) {
                             UE_LOGI("harness: menu-mode client join -- save-transfer bootstrap");
                             coop::save_transfer::ClientArm();
                             // A synchronous Start failure means no connect edge will ever clear the
@@ -358,28 +371,43 @@ void RunPlayLoop(bool idleInGameplay) {
         }
         wasRunning = running;
         if (running) wasHostSession = (g_session.role() == coop::net::Role::Host);
-        harness::pump::PostComposite([running, idleInGameplay] {
+        harness::pump::PostComposite([running, bootedIntoGameplay] {
+            // One live answer per tick, on the game thread, which is where the world memo
+            // refreshes; every consumer below that names a STATE reads this rather than the boot
+            // parameter.
+            const bool inGameplayWorld = InGameplayWorld();
             if (running) {
                 coop::net_pump::Tick(g_session);   // drains the object index first
             } else {
                 // No session: the object index still follows the engine, so a later session starts
                 // from a current one rather than a backlog.
                 ue_wrap::object_index::Drain();
-                if (idleInGameplay) {
-                    // Solo gameplay, no session yet: keep the local observers live.
+                if (bootedIntoGameplay) {
+                    // A run that auto-loaded its own world and may yet be joined: keep the coop
+                    // observers armed so a session starting on this world does not begin behind.
+                    // The boot fact, deliberately -- a player in a single-player world has no
+                    // session coming until they click Multiplayer, and the fan-out installs with
+                    // it, so arming it under them would change a game nobody asked us to change.
                     coop::subsystems::Install(g_session);
+                }
+                if (inGameplayWorld) {
                     // The quick-slot bar's icon edge is not a session's business -- the game
                     // publishes its icon tables after its own post-load refresh whether or not
                     // anyone is connected, so a solo world loses the race exactly as a hosted one
                     // does. It rides the session tick when there is a session and this one when
-                    // there is not; it latches per world either way. The readout rides with it,
-                    // so the path that has no session is also the path that can be measured.
+                    // there is not; it latches per world either way. A live world gate, not the
+                    // boot one: the ordinary player starts at the menu and loads from there, and
+                    // that is the launch the bar is broken in.
                     coop::hotbar_icon_edge::Tick();
-                    coop::dev::hotbar_icon_probe::Tick();
                 }
+                // The readout, OUTSIDE the world gate: it catches a dispatch that happens during
+                // the load, so its watch has to be armed while the menu is still up. A no-op
+                // unless its own row is set.
+                coop::dev::hotbar_icon_probe::Tick();
             }
-            // The roster needs a live world and player; skipped at the menu.
-            if (running || idleInGameplay) {
+            // The roster shows a board in a world and none at the menu, which is a live question:
+            // out of session it synthesises the local row, and at the menu there is nobody to show.
+            if (running || inGameplayWorld) {
                 coop::roster::Refresh();
             }
             // Always, self-clearing: re-project the nameplates (an empty snapshot with no puppets,

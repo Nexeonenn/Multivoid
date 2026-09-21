@@ -4,7 +4,6 @@
 
 #include "ue_wrap/actors/inventory.h"
 #include "ue_wrap/actors/save_record.h"
-#include "ue_wrap/actors/sleep.h"   // the shared live-mainGamemode accessor
 #include "ue_wrap/core/cached_obj_ref.h"
 #include "ue_wrap/core/call.h"
 #include "ue_wrap/core/log.h"
@@ -45,7 +44,22 @@ struct Offsets {
 
 Offsets g_off;
 void*   g_matInstClass = nullptr;
+void*   g_gamemodeClass = nullptr;
 void*   g_refreshFn    = nullptr;
+
+// The gamemode, cached the same way and for the same reason as the game instance below. Resolved
+// HERE rather than borrowed from another module: the one shared accessor this used to call
+// resolves its class inside a pass that a coop session drives, so off a session it answered null
+// forever and every read here failed -- the bar's icons have nothing to do with sleeping, and a
+// wrapper that borrows a neighbour's cache inherits the neighbour's driver.
+ue_wrap::CachedObjRef g_gamemode;
+
+void* Gamemode() {
+    if (g_gamemode.Alive()) return g_gamemode.Get();
+    if (!g_gamemodeClass) return nullptr;
+    g_gamemode.Set(R::FindObjectByClass(P::name::GamemodeClass));
+    return g_gamemode.Get();
+}
 
 // The game instance, cached. Resolving it means a GUObjectArray walk, and `Read` is called from a
 // per-tick reader and from a script-gate callback -- so walking per call is precisely the
@@ -77,6 +91,7 @@ bool Resolve() {
     void* giCls = R::FindClass(kGameInst);
     g_matInstClass = R::FindClass(kMatInst);
     if (!gmCls || !uiCls || !ppCls || !giCls || !g_matInstClass) return false;
+    g_gamemodeClass = gmCls;
 
     Offsets o;
     o.playerInterface = R::FindPropertyOffset(gmCls, L"playerInterface");
@@ -130,7 +145,7 @@ SR::Arr ArrayAt(const void* base, int32_t off) {
 
 bool Read(State& out) {
     if (!Resolve()) return false;
-    void* gm = ue_wrap::sleep::Gamemode();
+    void* gm = Gamemode();
     if (!gm) return false;
 
     State s;

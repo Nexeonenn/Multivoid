@@ -7,6 +7,7 @@
 
 #include "harness/session_runtime.h"
 #include "harness/world_boot.h"
+#include "coop/session/rig_ready.h"
 
 #include "harness/autotest.h"
 #include "harness/autotest_dispatch.h"
@@ -87,6 +88,17 @@ using namespace harness::diag;
 
 // Posts a task to the game thread.
 void Post(GT::Task t) { GT::Post(std::move(t)); }
+
+// [dev] menu_autoload's worker: the menu launch's load, off the timeline thread so the play loop
+// runs through it. It ends on the world, not on a budget -- BootStorySaveBlocking polls until the
+// engine takes the open or its own ~120 s cap expires, and the milestone is only said on success.
+DWORD WINAPI MenuAutoloadThread(LPVOID) {
+    if (world_boot::BootStorySaveBlocking())
+        coop::rig_ready::Say("solo-world");
+    else
+        UE_LOGW("harness: [dev] menu_autoload never reached gameplay");
+    return 0;
+}
 
 // The background timeline: sleeps for pacing, and every engine touch is posted to the game
 // thread.
@@ -351,10 +363,10 @@ DWORD WINAPI TimelineThread(LPVOID param) {
 
         UE_LOGI("harness: ==== PLAY READY ====");
         ue_wrap::log::Flush();  // the boot sequence lands on disk
-        // The one play loop, env- or browser-driven. idleInGameplay: a host or solo run booted
-        // straight into gameplay; a save-transfer client is at the menu, and its queued connect
-        // must hit the menu-mode branch.
-        session_runtime::RunPlayLoop(/*idleInGameplay=*/!saveTransferClient);
+        // The one play loop, env- or browser-driven. A host or solo run booted straight into
+        // gameplay; a save-transfer client is at the menu, and its queued connect must hit the
+        // menu-mode branch.
+        session_runtime::RunPlayLoop(/*bootedIntoGameplay=*/!saveTransferClient);
     } else if (scenario == "show") {
         // The autonomous visual confirm: spawn the puppet in front, hold idle, then drive a walk
         // speed to confirm the AnimBP animates from the variable writes. It does not exercise the
@@ -407,10 +419,23 @@ DWORD WINAPI TimelineThread(LPVOID param) {
         // The native launch (no test env, so the scenario defaults to menu): VOTV's own main menu,
         // where the MULTIPLAYER button drives coop, and no auto-load into gameplay (a test-only
         // behaviour). RunPlayLoop drains browser-initiated sessions and keeps the shutdown hooks
-        // live at the menu; the gameplay observers install when a session starts.
+        // live at the menu; the coop observers install when a session starts, and the world-scoped
+        // ones the moment this launch reaches a gameplay world, which is the whole point of the
+        // parameter being a boot fact and nothing else.
         UE_LOGI("harness: ==== MENU mode (native launch) -- MULTIPLAYER button drives coop ====");
         ue_wrap::log::Flush();  // the boot sequence lands on disk
-        session_runtime::RunPlayLoop(/*idleInGameplay=*/false);
+        // [dev] menu_autoload=1, TEST ONLY: the save load a player reaches through the menu's own
+        // Load button, issued on a worker so the play loop below is ALREADY ticking when the world
+        // comes up -- what this exists to measure happens during the load, and a load issued before
+        // the loop would be watched by nothing. No clock: BootStorySaveBlocking re-issues its open
+        // until one takes, which is the wait, and the content-warning screen does not block it.
+        if (cfg::ResolveFlag(coop::config_registry::rows::menu_autoload)) {
+            UE_LOGW("harness: [dev] menu_autoload=1 -- loading the '%s' slot from the menu",
+                    cfg::ResolveString(coop::config_registry::rows::save).c_str());
+            if (HANDLE t = ::CreateThread(nullptr, 0, MenuAutoloadThread, nullptr, 0, nullptr))
+                ::CloseHandle(t);
+        }
+        session_runtime::RunPlayLoop(/*bootedIntoGameplay=*/false);
     } else {
         UE_LOGI("harness: scenario '%s' -- no automatic actions", scenario.c_str());
     }

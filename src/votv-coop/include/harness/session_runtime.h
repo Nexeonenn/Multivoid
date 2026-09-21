@@ -44,7 +44,11 @@ void SpawnSecondPlayerWhenReady();
 // no per-scenario location is correct. Idempotent.
 void InstallLobbyPlayerCountSource();
 
-// Blocks until shutdown. idleInGameplay: see the .cpp header comment.
-void RunPlayLoop(bool idleInGameplay);
+// Blocks until shutdown. `bootedIntoGameplay` is a BOOT fact and only a boot fact: this process
+// auto-loaded a gameplay world of its own before the loop started, which the env test scenarios
+// do and a native launch never does. Nothing that asks whether a world is up now may read it --
+// those gates ask ue_wrap::world_identity inside the loop, because a launch that starts at the
+// menu reaches gameplay later and the two answers part there.
+void RunPlayLoop(bool bootedIntoGameplay);
 
 }  // namespace harness::session_runtime
