@@ -18,6 +18,7 @@
 #include "coop/input/input_owner.h"
 #include "coop/dev/object_overlay.h"
 #include "coop/dev/ragdoll_bone_overlay.h"
+#include "coop/save/join_window_baseline.h"
 #include "coop/save/save_transfer.h"
 #include "coop/dev/spawn_menu_unlock.h"
 #include "coop/dev/spawn_npc.h"
@@ -449,6 +450,7 @@ void Start() {
     // The save transfer's sinks on the session, and a sweep of stale crash-leftover zcoop_ slots
     // (age-gated, never a live sibling's).
     coop::save_transfer::Install(&session_runtime::Session());
+    coop::join_window_baseline::Install(&session_runtime::Session());
     coop::save_transfer::CleanupStaleSlotsAtBoot();
     // The player-list scoreboard (a second overlay surface, on tilde); the roster reads this
     // session.

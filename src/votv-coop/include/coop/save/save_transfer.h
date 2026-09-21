@@ -16,9 +16,7 @@
 
 #pragma once
 
-#include "coop/element/element.h"  // ElementId
 #include "coop/net/protocol.h"
-#include "ue_wrap/core/types.h"  // ue_wrap::FVector
 
 #include <cstdint>
 #include <string>
@@ -66,52 +64,6 @@ void TickHost();
 
 // A peer left mid-stream: drop its pump state (the disconnect edge).
 void CancelForSlot(int peerSlot);
-
-// The save-time position of keyless chipPile `eid` for `peerSlot`, captured at the blob
-// instant (OnRequest). False (out untouched) for a stale-fallback join, an unseeded or
-// post-save pile, or an out-of-range slot. The connect-replay snapshot builder stamps it onto
-// the pile's spawn so the client's twin destroy reconciles a pile the host moved in the join
-// window. Game thread.
-bool TryGetSaveTimePileXform(int peerSlot, coop::element::ElementId eid, ue_wrap::FVector& out);
-
-// The same for an entity that was a garbage CLUMP in the save this joiner loaded: its own copy is
-// a clump at this position. Host, game thread.
-bool TryGetSaveTimeClumpXform(int peerSlot, coop::element::ElementId eid, ue_wrap::FVector& out);
-
-// Record the pre-grab position of pile `eid` into every active join slot's blob pile map.
-// Called on the host at the seam where a grabbed pile's clump is born, before the pile dies
-// in place, so the position is still its save or native one. A no-op outside a join; lets the
-// land convert carry the save-time key for the client.
-void RecordGrabTimePileXform(coop::element::ElementId eid, const ue_wrap::FVector& preGrabLoc);
-
-// Like TryGetSaveTimePileXform but across all active join slots (the convert broadcast is a
-// single fan-out, not per joiner; a pile eid is unique). Game thread.
-bool TryGetSaveTimePileXformAnySlot(coop::element::ElementId eid, ue_wrap::FVector& out);
-
-// At `peerSlot`'s world-ready, send a position correction for every save-authoritative entity
-// (chipPile and keyed prop) whose current host actor position diverges from this joiner's
-// save-time position: a pile or prop the host moved during the join window. A pile carries no
-// position in the connect snapshot; a keyed prop does, but the joiner's load re-creates it at
-// the save position afterwards. Both are fixed by re-asserting the host's position at
-// quiescence. From ConnectReplayForSlot after the snapshot trigger. Game thread.
-void FlushDivergedSavePositionsForSlot(int peerSlot);
-
-// The save-time position of off-form kerfur `eid`, captured at the blob instant and searched
-// across every active peer slot's blob map (a kerfur off-prop's host eid is unique). False
-// (out untouched) if no slot captured it: a stale-fallback join, a kerfur bought after the
-// save, or one already active at every blob instant. The kerfur table reads it at the first
-// conversion to record the off-prop's origin eid, which the connect snapshot's NPC spawn
-// carries to the joiner as the eid to retire. Game thread.
-bool TryGetSaveTimeKerfurXformAnySlot(coop::element::ElementId eid, ue_wrap::FVector& out);
-
-// Send an explicit per-key destroy to `peerSlot` for every keyed prop its blob contained that
-// the host's live world no longer has (a prop the host grabbed, destroyed or converted while
-// the joiner downloaded and loaded): the key set captured at the blob instant diffed against
-// the live key set, the MTA entity-remove shape. Per slot (the divergence is this joiner's
-// blob's), on the bulk lane ahead of the snapshot so the removes precede the adds. A no-op
-// without a live-capture baseline (a stale-fallback join), which the divergence sweep then
-// owns. Game thread.
-void SendBlobDivergenceDeletes(int peerSlot);
 
 // Client side.
 

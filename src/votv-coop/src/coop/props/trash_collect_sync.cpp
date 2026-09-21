@@ -20,7 +20,7 @@
 #include "coop/props/remote_prop.h"        // ResolveMirrorEidByActor (the pile-grab hook mirror eid resolve)
 #include "coop/props/remote_prop_spawn.h"
 #include "coop/props/join_membership_sweep.h"  // the sweep's candidate and claim queries
-#include "coop/save/save_transfer.h"      // RecordGrabTimePileXform, the grab-edge save-time key
+#include "coop/save/join_window_baseline.h"  // RecordGrabTimePileXform, the grab-edge save-time key
 #include "coop/props/trash_channel.h"      // NoteClumpBorn, the clump's birth certificate
 #include "coop/props/trash_sweep.h"        // NoteSwept, a broom stroke's clumps
 #include "coop/props/trash_use_intercept.h"
@@ -92,7 +92,7 @@ bool NoteClumpBornOfPile(void* pile, void* clump) {
     if (E == coop::element::kInvalidId) return false;
     // The pile's position frozen as the save-time key (it has not moved; it dies in place after
     // this spawn).
-    coop::save_transfer::RecordGrabTimePileXform(E, ue_wrap::engine::GetActorLocation(pile));
+    coop::join_window_baseline::RecordGrabTimePileXform(E, ue_wrap::engine::GetActorLocation(pile));
     coop::trash_channel::NoteClumpBorn(clump, E, ue_wrap::prop::GetChipType(pile));
     return true;
 }

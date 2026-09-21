@@ -21,7 +21,7 @@
 #include "coop/props/prop_wire_parity.h"  // PhysFlagsOf
 #include "coop/props/prop_lifecycle.h"
 #include "coop/props/remote_prop.h"
-#include "coop/save/save_transfer.h"  // TryGetSaveTimePileXform / ClumpXform, the join snapshot's match key
+#include "coop/save/join_window_baseline.h"  // TryGetPileXform / ClumpXform, the join snapshot's match key
 #include "coop/props/trash_channel.h"  // ExpressClumpGeneration, behind a clump's row
 #include "coop/props/snapshot_census.h"  // the per-class completeness census on SnapshotComplete
 #include "coop/dev/eid_lifetime_trace.h"  // read-only: capture-eid vs wire-eid
@@ -316,10 +316,10 @@ bool BuildPropSpawnPayload_(void* obj, coop::element::ElementId eid, int32_t int
     p.hasMatchPos = coop::net::match_form::kNone;
     if (matchSlot >= 1 && p.elementId != 0 && ue_wrap::prop::IsTrashActor(obj)) {
         ue_wrap::FVector sv;
-        if (coop::save_transfer::TryGetSaveTimePileXform(matchSlot, p.elementId, sv)) {
+        if (coop::join_window_baseline::TryGetPileXform(matchSlot, p.elementId, sv)) {
             p.matchX = sv.X; p.matchY = sv.Y; p.matchZ = sv.Z;
             p.hasMatchPos = coop::net::match_form::kPile;
-        } else if (coop::save_transfer::TryGetSaveTimeClumpXform(matchSlot, p.elementId, sv)) {
+        } else if (coop::join_window_baseline::TryGetClumpXform(matchSlot, p.elementId, sv)) {
             p.matchX = sv.X; p.matchY = sv.Y; p.matchZ = sv.Z;
             p.hasMatchPos = coop::net::match_form::kClump;
         }

@@ -6,7 +6,7 @@
 #include "coop/element/registry.h"
 #include "coop/net/protocol.h"   // KerfurConvertBroadcastPayload + ReliableKind (the BindFormActor wire)
 #include "coop/net/session.h"
-#include "coop/save/save_transfer.h"  // TryGetSaveTimeKerfurXformAnySlot -- the off-prop pose at the blob instant
+#include "coop/save/join_window_baseline.h"  // TryGetKerfurXformAnySlot -- the off-prop pose at the blob instant
 #include "ue_wrap/core/log.h"
 #include "ue_wrap/core/reflection.h"
 
@@ -295,7 +295,7 @@ coop::element::ElementId BindFormActor(coop::element::ElementId oldEid, void* ne
         // a joiner mid save-transfer has not.
         if (rec.originOffEid == coop::element::kInvalidId) {
             ue_wrap::FVector sv;
-            if (coop::save_transfer::TryGetSaveTimeKerfurXformAnySlot(oldEid, sv))
+            if (coop::join_window_baseline::TryGetKerfurXformAnySlot(oldEid, sv))
                 rec.originOffEid = oldEid;
         }
         // Record the form we converted FROM. A mid-session turn-on's NPC spawn carries this as

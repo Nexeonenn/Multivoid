@@ -82,6 +82,7 @@
 #include "coop/dev/light_group_census.h"
 #include "coop/dev/lightswitch_probe.h"
 #include "coop/dev/perf_probe.h"
+#include "coop/save/join_window_baseline.h"  // the connect edge's removes and position corrections
 #include "coop/save/save_transfer.h"
 #include "coop/session/join_beacon.h"
 #include "coop/interactables/grime_sync.h"
@@ -271,14 +272,14 @@ void ConnectReplayForSlot(int slot) {
     // client drops exactly those rather than the divergence sweep inferring the deletes. On the
     // bulk lane ahead of the snapshot, so the removes land before the adds. A no-op for a joiner
     // with no blob baseline, which the sweep still owns.
-    coop::save_transfer::SendBlobDivergenceDeletes(slot);
+    coop::join_window_baseline::SendDivergenceDeletes(slot);
     coop::prop_snapshot::TriggerForSlot(slot);
     coop::prop_drive_host::OnPeerWorldReady();  // every driven prop's pose again, so the joiner parks the resting ones the delta gate would never send it
     // Deliver the current position of any save-authoritative chipPile the host moved in this
     // joiner's connect window (the move's convert was dropped pre-world, and chipPiles carry no
     // position in the snapshot). After the snapshot, so it rides the bulk lane behind it; the
     // client snaps the bound native at quiescence.
-    coop::save_transfer::FlushDivergedSavePositionsForSlot(slot);
+    coop::join_window_baseline::FlushDivergedPositions(slot);
     coop::item_activate::QueueConnectBroadcastForSlot(slot);
     coop::weather_sync::QueueConnectBroadcastForSlot(slot);
     coop::interactable_sync::QueueConnectBroadcastForSlot(slot);  // door/light/container states

@@ -13,7 +13,7 @@
 #include "coop/player/puppet_carry_drive.h"  // OnTakenOver: a taker ends a client's carry drive
 #include "coop/props/pile_look.h"
 #include "coop/props/remote_prop.h"   // RegisterPropMirror (the single rebind entry point)
-#include "coop/save/save_transfer.h"  // the save-time pile transform for a land
+#include "coop/save/join_window_baseline.h"  // the save-time pile transform for a land
 #include "ue_wrap/engine/engine.h"      // the per-form scale and the transform and velocity reads
 #include "ue_wrap/core/log.h"
 #include "ue_wrap/actors/prop.h"        // IsGarbageClump (rest detection)
@@ -146,7 +146,7 @@ coop::net::PropConvertPayload BuildConvert(coop::element::ElementId E, uint8_t k
     p.hasMatchPos = 0;
     if (kind == coop::net::propconvert_kind::kToPile && static_cast<uint32_t>(E) != 0u) {
         ue_wrap::FVector sv;
-        if (coop::save_transfer::TryGetSaveTimePileXformAnySlot(E, sv)) {
+        if (coop::join_window_baseline::TryGetPileXformAnySlot(E, sv)) {
             p.matchX = sv.X; p.matchY = sv.Y; p.matchZ = sv.Z;
             p.hasMatchPos = 1;
         }
