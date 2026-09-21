@@ -358,6 +358,12 @@ CFG_FLAG(pinecone_probe, "pinecone_probe", "dev", false, nullptr,
     "Diagnostic probe: pinecone prop behavior.")
 CFG_FLAG(live_store_readout, "live_store_readout", "dev", false, nullptr,
     "Diagnostic readout: the live GObjStack container store.")
+CFG_FLAG(hotbar_icon_probe, "hotbar_icon_probe", "dev", false, "VOTVCOOP_HOTBAR_ICON_PROBE",
+    "Diagnostic readout (F-121): the quick-slot bar at world load -- the slot widget arrays, the "
+    "prop-icon name table and texture cache, the carried count, and per slot which texture is bound "
+    "to its `tex` parameter. Logs on change, so a settled bar is silent. The env twin exists because "
+    "the question is whether the bar loses the race on ONE peer or both, which an ini-only row "
+    "cannot arm in a single run.")
 CFG_FLAG(heap_probe, "heap_probe", "dev", false, nullptr,
     "Diagnostic probe: process heap usage.")
 CFG_FLAG(drone_probe, "drone_probe", "dev", false, nullptr,
