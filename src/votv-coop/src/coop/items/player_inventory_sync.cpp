@@ -341,7 +341,16 @@ void Tick() {
     UE_LOGI("inventory[selftest]: read local saveSlot -- inventory=%zu equipment=%zu hold=%zu",
             inv.inventory.size(), inv.equipment.size(), inv.hold.size());
     {   // DIAG: name what the LOCAL player actually has post-spawn (find flashlight/glasses/compass).
-        auto narrow = [](const std::wstring& w) { return std::string(w.begin(), w.end()); };
+        // Explicit, because the implicit iterator copy this replaced both warned (C4244) and
+        // silently mangled every non-ASCII character into whatever its low byte happened to be.
+        // These are engine class and key leaves, ASCII in practice -- so a surprising name must be
+        // VISIBLE in the log as '?' rather than quietly become a different name.
+        auto narrow = [](const std::wstring& w) {
+            std::string s;
+            s.reserve(w.size());
+            for (const wchar_t c : w) s.push_back((c >= 0x20 && c < 0x7F) ? static_cast<char>(c) : '?');
+            return s;
+        };
         for (size_t i = 0; i < inv.inventory.size(); ++i)
             UE_LOGI("  selftest inv[%zu]: className='%s' key='%s'", i,
                     narrow(inv.inventory[i].className).c_str(), narrow(inv.inventory[i].key).c_str());
