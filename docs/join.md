@@ -395,7 +395,7 @@ not raise the game's own active-event counter, whose save and pause blocks the m
 | A host change inside the window that post-dates the snapshot (a kerfur turned off) materialises at quiescence, after the curtain has lifted, as a visible pop-in | `[V]` `coop/element/mirror_defer` holds it until quiescence |
 | A local save-loaded actor repositioned after the curtain lifts is visible: the curtain lifts at the end marker, before quiescence, a short curtain being chosen over a blank screen | `[V]` `ui/join_curtain` |
 | The stale fallback streams the on-disk slot, which may be older than the live world | `[V]` `coop/save/save_transfer` logs it |
-| NOTHING stands behind the phase tokens. The whole-join failsafe is deleted (WP-B2): a join ends when a phase's token stops or the transport dies, never because a sum of independent durations crossed a number | `[V]` `coop/session/join_progress`, `docs/NET_SEND_RATE_ARC.md` section 8i |
+| NOTHING stands behind the phase tokens. The whole-join failsafe is deleted (WP-B2): a join ends when a phase's token stops or the transport dies, never because a sum of independent durations crossed a number | `[V]` `coop/session/join_progress` |
 | The tokens are driven from `harness::TickPumpWatchdogs`, on the timeline thread, NOT from the render: an overlay that fails to install is non-fatal and the game boots on without it, which would otherwise leave every join budget dead for that session | `[V]` `harness/session_runtime.cpp`, `harness.cpp` logs the non-fatal install failure |
 | The divergence sweep aborts at its half-of-the-world valve and leaves the joiner's excess keyed props in place, unbound | `[V]` `coop/props/join_membership_sweep` |
 

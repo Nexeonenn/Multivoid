@@ -1,38 +1,17 @@
 // coop/save/join_window_baseline.h -- what the host's world was at the instant a joiner's blob was
-// cut, and every correction that reconciles the host's live world against it until the window
-// closes.
+// cut, and the corrections that reconcile the host's live world against it. Host, game thread.
 //
-// The blob a joiner loads is a PHOTOGRAPH. The host keeps playing while that photograph travels,
-// is written to disk and is loaded, which on a slow link is a minute: a pile is carried off, a
-// keyed prop is picked up and destroyed, a kerfur is turned on. Everything the joiner then builds
-// from the photograph is right for an instant that has passed. This module is the other half of
-// the transfer: at the capture instant it records the world's save-authoritative state, and
-// through the join window it sends the differences.
-//
-// Two kinds of difference, both per joiner, because each joiner's photograph was cut at its own
-// instant:
-//
-//   - GONE. The keyed props the blob contains that the host no longer has. An explicit PropDestroy
-//     per key at the connect edge, ahead of the snapshot bracket so the removes precede the adds
-//     (MTA's Packet_EntityRemove). Without it the divergence sweep has to INFER the delete.
-//   - MOVED. The save-time position of every chipPile, garbage clump, off-form kerfur and keyed
-//     prop. A pile carries no position on the wire at all (both peers load it from the same save);
-//     a keyed prop does carry one, but the joiner's own loadObjects re-creates it at the save
-//     position afterwards and clobbers it. Both are answered the same way: re-assert the host's
-//     current position once the joiner has quiesced, past the clobber.
-//
-// The window does not close at world-ready. A pile the host moves late in a long load tail would
-// get no correction from a one-shot, so the flush is LATE-ARMED: it keeps running on a cadence for
-// a window past the connect edge, deduped per (slot, eid) to actual movement. Its expiry is the
-// join window's true close, and it is what retires the maps -- with "an active join" defined as a
-// non-empty map, a map left behind made every steady-state pile grab stamp a save-time key and
-// every landing carry one, and the client armed a hopeless pending twin per drop.
-//
-// A stale-fallback join (the live capture was unavailable and the canonical on-disk slot went out
-// instead) captures no baseline at all: the maps stay empty, every entry point is a no-op, and the
-// divergence sweep keeps full responsibility for that join.
-//
-// Host side, game thread throughout.
+// The blob is a PHOTOGRAPH, and the host keeps playing while it travels, is written and is loaded
+// -- a minute on a slow link. Two kinds of difference are answered per joiner, each photograph
+// having been cut at its own instant. GONE: keyed props the blob holds that the host no longer
+// has, sent as an explicit PropDestroy per key ahead of the bracket (MTA's Packet_EntityRemove),
+// so the divergence sweep need not INFER the delete. MOVED: the save-time position of every
+// chipPile, clump, off-form kerfur and keyed prop, re-asserted once the joiner has quiesced -- a
+// pile carries no position on the wire at all, and a keyed prop's is clobbered by the joiner's own
+// loadObjects afterwards. The flush is LATE-ARMED past the connect edge, because a pile moved late
+// in a long load tail would get no correction from a one-shot; its expiry is the join window's
+// true close and retires the maps. A stale-fallback join captures nothing and every entry point is
+// then a no-op, the divergence sweep keeping full responsibility. See docs/join.md.
 
 #pragma once
 

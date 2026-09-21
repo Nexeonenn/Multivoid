@@ -1,20 +1,16 @@
 // ui/join_curtain.h -- the instant-world UPPER layer: the SHORT curtain.
 //
-// A full-viewport opaque cover the joining client raises when its world starts loading and
-// dismisses with a smooth alpha fade once the primary world is assembled -- SnapshotComplete plus
-// the spawn drain, which is NOT full quiescence. It hides the rawest connect moment: the client's
-// own save load-in, the camera settle, the spawn burst, and the local-actor reposition jumps that
-// deferred spawning cannot hide, because those actors are the engine's own. It also covers the
-// wait between the world coming up and the host's bracket arriving, which is the host's to spend
-// and can be long. Lifting at SnapshotComplete, about two
-// seconds before quiescence, adds no long blank screen: the world fades in already assembled and
-// the uncertain tail keeps resolving invisibly under mirror_defer.
+// A full-viewport opaque cover the joining client raises when its world STARTS LOADING and fades
+// out once the primary world is assembled (SnapshotComplete plus the spawn drain, which is not
+// full quiescence). It hides the client's own save load-in, the camera settle, the spawn burst and
+// the reposition jumps the engine makes with its own actors, and the wait for the host's bracket,
+// which is the host's to spend and can be long. Lifting about two seconds before quiescence costs
+// no blank screen: the world fades in assembled and the tail resolves under mirror_defer.
 //
-// The cover draws on the ImGui BACKGROUND draw list -- on top of the game world but behind the
-// loading panel -- so the panel stays legible while the curtain is up. Pure ImGui, our surface and
-// our trigger, not the engine's ClientSetCameraFade, whose co-op semantics are unpredictable. Show,
-// BeginDismiss and Reset are called from the join lifecycle on the game thread; Render is called
-// once per frame from the imgui overlay, on the DX Present hook.
+// It draws on the ImGui BACKGROUND draw list -- over the world, under the loading panel -- so the
+// panel stays legible above it. Ours, not the engine's ClientSetCameraFade, whose coop semantics
+// are unpredictable. Every writer is one lock-free atomic store, so any thread may raise it;
+// Render runs per frame on the DX Present hook. Lifecycle and measurements: docs/join.md.
 
 #pragma once
 
