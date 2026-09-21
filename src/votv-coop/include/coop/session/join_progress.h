@@ -211,7 +211,7 @@ View Snapshot();      // thread-safe copy of the current state
 // all it could ever say was that the sum ran long, which is the guess the field dialog was
 // printing. It is deleted, and no phase inherited its job.
 //
-// Driven from harness::TickPumpWatchdogs, i.e. from the TimelineThread loops that drive the join
+// Driven from harness::pump::TickWatchdogs, i.e. from the TimelineThread loops that drive the join
 // itself -- NOT from the render. An overlay that fails to install is non-fatal and the game boots
 // on without it, and a watchdog reachable only through the Present hook is dead for that whole
 // session. Cheap and idempotent; call it as often as you like.

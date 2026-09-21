@@ -6,6 +6,7 @@
 #include "harness/harness.h"
 
 #include "harness/session_runtime.h"
+#include "harness/world_boot.h"
 
 #include "harness/autotest.h"
 #include "harness/autotest_dispatch.h"
@@ -239,7 +240,7 @@ DWORD WINAPI TimelineThread(LPVOID param) {
         const coop::net::Config netCfg = cfg::ReadNetConfig(netEnabled);
         const bool saveTransferClient =
             netEnabled && netCfg.role == coop::net::Role::Client;
-        if (!saveTransferClient) session_runtime::BootStorySaveBlocking();
+        if (!saveTransferClient) world_boot::BootStorySaveBlocking();
         // The SDK profile is checked against the running build (after the world boot on a host; on
         // a save-transfer client the classes load with the menu world, and every consumer
         // self-retries).

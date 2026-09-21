@@ -1,12 +1,12 @@
 // harness/session_runtime.h -- the coop-session LIFECYCLE DRIVER, on the TimelineThread. It
-// owns THE production session object (g_session) and everything per Start and Stop: world
-// boot (the story save, a menu-mode save-transfer join, the host-with-save picker), session
-// bringup (StartCoopSession wiring), and the unified 60 Hz play loop (browser-start drain,
-// pump composite, abort and death edges). harness.cpp keeps the PROCESS boot -- the one-shot
-// installs -- and the scenario timeline; it reaches the session object through Session() and
-// drives the lifecycle through the functions below. The scenario and UX glue (the join-progress
-// cover, the server-browser reopen) is harness-side by principle 7: a coop/session module never
-// touches ui::.
+// owns THE production session object and everything per Start and Stop: session bringup
+// (StartCoopSession wiring) and the unified 60 Hz play loop (browser-start drain, pump
+// composite, abort and death edges). WHICH world comes up is harness/world_boot.h; the one
+// task posted to the game thread per tick is harness/pump.h. harness.cpp keeps the PROCESS
+// boot -- the one-shot installs -- and the scenario timeline; it reaches the session object
+// through Session() and drives the lifecycle through the functions below. The scenario and UX
+// glue (the join-progress cover, the server-browser reopen) is harness-side by principle 7: a
+// coop/session module never touches ui::.
 
 #pragma once
 
@@ -31,12 +31,6 @@ coop::net::Session& Session();
 // env-configured boot (play scenario) AND the browser drain in RunPlayLoop.
 // TimelineThread only. Returns Start()'s success.
 bool StartCoopSession(const coop::net::Config& netCfg);
-
-// Boot STORY gameplay (LoadStorySave re-issue loop / StartFreshGame). Blocks
-// the calling TimelineThread until gameplay or the ~120 s cap. See the .cpp
-// for the forceFresh / slotOverride / forceGameMode semantics.
-bool BootStorySaveBlocking(bool forceFresh = false, const wchar_t* slotOverride = nullptr,
-                           int forceGameMode = -1);
 
 // Spawn the static 2nd player the instant the local mainPlayer_C exists
 // ([dev] static_2nd_player solo visual aid; the play scenario's non-net arm).
