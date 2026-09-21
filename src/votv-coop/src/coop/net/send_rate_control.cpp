@@ -4,8 +4,6 @@
 
 #include "ue_wrap/core/log.h"
 
-#include <cmath>
-
 namespace coop::net {
 
 void SendRateControl::Reset(bool controlEnabled) {
@@ -15,6 +13,7 @@ void SendRateControl::Reset(bool controlEnabled) {
     for (int i = 0; i < kSlots; ++i) {
         Slot& s = slots_[i];
         s.queuedBytes.store(0, std::memory_order_relaxed);
+        s.unrelBytes.store(0, std::memory_order_relaxed);
         s.recvBytes.store(0, std::memory_order_relaxed);
         s.resetArmed.store(false, std::memory_order_relaxed);
         s.m = Measured{};
@@ -29,25 +28,7 @@ void SendRateControl::Reset(bool controlEnabled) {
     rateWriteCount_ = 0;
 }
 
-int64_t SendRateControl::RateForThrottle(int throttle) {
-    // THE ACTUATOR, and the port's larger divergence from `reference/enet/peer.c`. ENet's
-    // packetThrottle is a fraction of a budget the APPLICATION CONFIGURES -- host.c's
-    // enet_host_bandwidth_throttle turns an outgoingBandwidth the caller supplied into each peer's
-    // limit -- and it scales an ack-clocked window by packetThrottle/SCALE (`protocol.c:1472`).
-    // We have no configured budget, and refusing to ask the player for one is the design's own
-    // rule; not knowing the link is the defect this controller answers. So the same 0..32 index
-    // maps GEOMETRICALLY onto a rate ladder instead of linearly onto a budget. ENet's +-2 step is
-    // kept unchanged, which makes one step a factor of (kCeilingBps/kFloorBps)^(2/32) = 1.46 and
-    // traverses the ladder end to end in ENet's own 16 steps.
-    if (throttle <= 0) return kFloorBps;
-    if (throttle >= kThrottleScale) return kCeilingBps;
-    const double span = static_cast<double>(kCeilingBps) / static_cast<double>(kFloorBps);
-    return static_cast<int64_t>(static_cast<double>(kFloorBps) *
-                                std::pow(span, static_cast<double>(throttle) / kThrottleScale));
-}
-
-
-int64_t SendRateControl::StartRateBps() { return RateForThrottle(kStartThrottle); }
+int64_t SendRateControl::StartRateBps() { return kStartRateBps; }
 
 void SendRateControl::FreeSlot(int slot) {
     if (slot < 0 || slot >= kSlots) return;
@@ -62,6 +43,7 @@ SendRateControl::Measured& SendRateControl::Take_(int slot) {
     Slot& s = slots_[slot];
     if (s.resetArmed.exchange(false, std::memory_order_acquire)) {
         s.queuedBytes.store(0, std::memory_order_relaxed);
+        s.unrelBytes.store(0, std::memory_order_relaxed);
         s.recvBytes.store(0, std::memory_order_relaxed);
         s.m = Measured{};
         s.m.rateBps = s.m.rateWritten = StartRateBps();
@@ -72,6 +54,11 @@ SendRateControl::Measured& SendRateControl::Take_(int slot) {
 void SendRateControl::NoteReliableQueued(int slot, int bytes) {
     if (slot < 0 || slot >= kSlots || bytes <= 0) return;
     slots_[slot].queuedBytes.fetch_add(static_cast<uint64_t>(bytes), std::memory_order_relaxed);
+}
+
+void SendRateControl::NoteUnreliableQueued(int slot, int bytes) {
+    if (slot < 0 || slot >= kSlots || bytes <= 0) return;
+    slots_[slot].unrelBytes.fetch_add(static_cast<uint64_t>(bytes), std::memory_order_relaxed);
 }
 
 void SendRateControl::NoteReliableReceived(int slot, int bytes) {
@@ -127,98 +114,62 @@ void SendRateControl::OpenWindow_(Measured& m, uint64_t nowMs, int64_t delivered
     m.probesUnknown = 0;
     m.probesSkipped = 0;
     m.echoesRefused = 0;
-    m.openCount = 0;
-    m.accelCount = 0;
-    m.decelCount = 0;
+    m.climbCount = 0;
+    m.brakeCount = 0;
+    m.anchorCount = 0;
     m.deadCount = 0;
     m.holdCount = 0;
     m.rateWrites = 0;
 }
 
-void SendRateControl::Decide_(Measured& m, int rtt) {
-    // `enet_peer_throttle`, ported from `reference/enet/peer.c:63-91` (MIT; THIRD-PARTY-NOTICES.md
-    // "ENet (ported algorithms)"). ENet runs it on every acknowledgement; we run it on every probe
-    // reply, which is the same event -- a round trip closing -- at 10 Hz instead of at packet rate.
+void SendRateControl::Steer_(Measured& m) {
+    // THE LAW. Every term below is a byte count or a ratio of two byte counts; nothing here is
+    // compared against a reference derived from its own past, which is the single property both
+    // refuted laws lacked (see the header's block for the measurement that refutes them).
 
-    // DIVERGENCE 1, idle. ENet's throttle bounds an ack-clocked window, so a link nobody is using
-    // cannot be overdriven by opening it; ours is a RATE, and a rate accelerated on unloaded probes
-    // is the rate the NEXT burst opens at -- root A, rebuilt by the thing that was meant to end it.
-    // So an idle link decides nothing. `peer.c` has no equivalent because it needs none.
+    // An idle link decides nothing. A rate is a CEILING, so with nothing queued it costs nothing to
+    // leave where it is -- and a rate raised on an empty link is the rate the next burst opens at,
+    // which is root A rebuilt by the thing meant to end it.
     if (m.demand < kIdleDemandBytes) { ++m.holdCount; return; }
-    // There is always a snapshot to compare against by the time this runs: Decide_ is reached only
-    // once a round trip has closed, and the epoch block below sets rttBaseMs on that very first one
-    // (its `throttleEpochMs == 0` disjunct). ENet needs no equivalent either -- it seeds
-    // `lastRoundTripTime` with a pessimistic 500 ms at connect (`peer.c:420`) instead.
+    // Not measured YET: neither guard may bind on an estimate younger than its own time constant.
+    // This is the whole of the "no reading" behaviour, where the first law needed one answer per
+    // clause and had none -- there is one state here and it holds at the opening rate.
+    if (m.servedSamples < kServedWarmupSamples) { ++m.holdCount; return; }
 
-    if (m.rttBaseMs <= m.rttBaseVarMs && m.rttBaseMs <= kSignalFloorMs) {
-        // `peer.c:65-68` -- the delay signal is unusable, so OPEN rather than brake.
-        // DIVERGENCE 2, the second test. ENet's condition alone is also true of a link DROWNING in
-        // queue, where baseline and variance are both huge, and opening there would accelerate
-        // exactly the 17x overdrive measured costing a thin uplink 71% of itself. The bound is the
-        // instrument's own floor: an echo waits up to one 5 ms net-thread pass on each side, so
-        // under ~10 ms the probe truly cannot discriminate, while above it a large variance means
-        // a troubled link rather than an unmeasurable one.
-        m.throttle = kThrottleScale;
-        ++m.openCount;
-    } else if (rtt <= m.rttBaseMs) {                        // `peer.c:70-78`
-        m.throttle += kThrottleAccel;
-        if (m.throttle > kThrottleScale) m.throttle = kThrottleScale;
-        ++m.accelCount;
-    } else if (rtt > m.rttBaseMs + 2 * m.rttBaseVarMs) {    // `peer.c:80-88`
-        // ENet writes this as `if (throttle > decel) throttle -= decel; else throttle = 0;`
-        // because its field is enet_uint32 and would wrap; on a signed int the two forms are
-        // identical for every input, so the clamp is written directly.
-        m.throttle -= kThrottleDecel;
-        if (m.throttle < 0) m.throttle = 0;
-        ++m.decelCount;
+    // Little's law, read backwards: the bytes the transport has on the wire and unacknowledged,
+    // divided by the rate those bytes are being acknowledged at, is the time the wire is standing
+    // in front of delivery. Both terms are reliable-only, which is the only way the division means
+    // anything. An empty wire is no queue; a wire holding bytes while nothing is acknowledged is
+    // the worst case there is, and is braked rather than left undefined.
+    const int64_t unacked = static_cast<int64_t>(m.last.sentUnackedReliable);
+    m.inflightMs = unacked <= 0 ? 0
+                 : m.relBps > 0 ? unacked * 1000 / m.relBps
+                                : kQueueBrakeMs * 2;
+
+    if (m.inflightMs > kQueueBrakeMs) {
+        // Braking goes straight to the measurement rather than to a fraction of the current rate:
+        // a multiplicative back-off from a rate that is already hundreds of times too high takes
+        // hundreds of decisions to arrive, and the link has been telling us its capacity all along.
+        m.rateBps = m.servedBps;
+        ++m.brakeCount;
+    } else if (m.inflightMs <= kQueueClimbMs) {
+        m.rateBps = m.rateBps * kClimbNum / kClimbDen + kClimbStepBps;
+        ++m.climbCount;
     } else {
-        ++m.deadCount;   // `peer.c:90` -- a real dead band, and the reason the rate settles at all
-        return;
-    }
-    m.rateBps = RateForThrottle(m.throttle);
-}
-
-void SendRateControl::Throttle_(Measured& m, int rtt, uint64_t nowMs) {
-    // The estimator around the law, ported from `reference/enet/protocol.c:874-913`. Order matters
-    // and is ENet's: the decision is taken on the raw sample BEFORE smoothing absorbs it
-    // (`:876` precedes `:878`), so a round trip that just doubled is judged against a baseline it
-    // has not yet moved.
-    if (m.rttSmoothMs >= 0) Decide_(m, rtt);   // `:874` guards on lastReceiveTime; ours on the sentinel
-
-    if (m.rttSmoothMs < 0) {
-        // `:893-897`, the first sample. ENet seeds from a 500 ms default and lets the accumulators
-        // below take the minimum against it; with an explicit "nothing known" sentinel the faithful
-        // equivalent is to seed all four from the reading itself.
-        m.rttSmoothMs     = rtt;
-        m.rttVarMs        = (rtt + 1) / 2;
-        m.rttLowestMs     = rtt;
-        m.rttVarHighestMs = m.rttVarMs;
-    } else {
-        m.rttVarMs -= m.rttVarMs / 4;                       // `:878`
-        if (rtt >= m.rttSmoothMs) {                         // `:880-885`
-            const int diff = rtt - m.rttSmoothMs;
-            m.rttVarMs    += diff / 4;
-            m.rttSmoothMs += diff / 8;
-        } else {                                            // `:886-891`
-            const int diff = m.rttSmoothMs - rtt;
-            m.rttVarMs    += diff / 4;
-            m.rttSmoothMs -= diff / 8;
-        }
-        if (m.rttSmoothMs < m.rttLowestMs) m.rttLowestMs = m.rttSmoothMs;       // `:899-900`
-        if (m.rttVarMs > m.rttVarHighestMs) m.rttVarHighestMs = m.rttVarMs;     // `:902-903`
+        ++m.deadCount;
     }
 
-    // `:905-913`. This is what makes the baseline a BASELINE rather than a running average: the law
-    // compares against the LOWEST smoothed round trip of the previous interval and the HIGHEST
-    // variance in it, and both accumulators restart from the current reading -- so a queue that
-    // drains inside an interval is seen, and one that does not is what the next snapshot reports.
-    if (m.throttleEpochMs == 0 || nowMs - m.throttleEpochMs >= kThrottleIntervalMs) {
-        m.rttBaseMs       = m.rttLowestMs;
-        m.rttBaseVarMs    = m.rttVarHighestMs > 1 ? m.rttVarHighestMs : 1;   // ENET_MAX(.., 1)
-        m.rttLowestMs     = m.rttSmoothMs;
-        m.rttVarHighestMs = m.rttVarMs;
-        m.throttleEpochMs = nowMs;
+    // THE ANCHOR, applied to every decision including the ones that changed nothing. A rate may not
+    // stand above a small multiple of what the link is actually carrying, whatever the delay term
+    // says -- and on the archived run the delay term said "accelerate" for 180 of 210 seconds while
+    // this bound was 442x away. It is deliberately the last word.
+    const int64_t cap = m.servedBps * kOverdriveNum / kOverdriveDen;
+    if (cap > 0 && m.rateBps > cap) {
+        m.rateBps = cap;
+        ++m.anchorCount;
     }
+    if (m.rateBps < kFloorBps) m.rateBps = kFloorBps;
+    if (m.rateBps > kCeilingBps) m.rateBps = kCeilingBps;
 }
 
 int64_t SendRateControl::PendingRateWrite(int slot) {
@@ -243,6 +194,7 @@ void SendRateControl::Sample(int slot, const LinkSample& in, uint64_t nowMs) {
     Slot& s = slots_[slot];
 
     const int64_t queued = static_cast<int64_t>(s.queuedBytes.load(std::memory_order_relaxed));
+    const int64_t unrel = static_cast<int64_t>(s.unrelBytes.load(std::memory_order_relaxed));
     const uint64_t recv = s.recvBytes.load(std::memory_order_relaxed);
     // Delivery: our count of the bytes GNS took, less what it still holds. GNS keeps both pending
     // totals in its OWN units -- it grows each message by a 1 to 6 byte reliable-stream header before
@@ -269,14 +221,36 @@ void SendRateControl::Sample(int slot, const LinkSample& in, uint64_t nowMs) {
         anyBusy_ = true;
     }
 
-    // The fastest sample interval inside the reported second: a link whose average hides a burst
-    // says so here.
+    // The two smoothed rates the law reads, and the peak, all differentiated over the SAME sample
+    // interval. The law runs here, on the 10 Hz cadence, because a join has to climb inside its own
+    // download -- a decision per reported second would spend the whole of a short transfer ramping.
     if (m.havePrev && nowMs > m.prevSampleMs) {
-        const int64_t bps = (delivered - m.prevDelivered) * 1000 /
-                            static_cast<int64_t>(nowMs - m.prevSampleMs);
-        if (bps > m.peakBps) m.peakBps = bps;
+        const int64_t dtMs = static_cast<int64_t>(nowMs - m.prevSampleMs);
+        const int64_t relBps = (delivered - m.prevDelivered) * 1000 / dtMs;
+        // Unreliable is counted as OFFERED, not delivered: nothing acknowledges it. That is exact
+        // for what this term is for -- knowing what the connection-wide rate is being spent on --
+        // and it is the reason the anchor does not clamp an ordinary play session, whose traffic is
+        // pose and voice and whose acknowledged delivery is therefore near zero.
+        const int64_t unrelBps = (unrel - m.prevUnrel) * 1000 / dtMs;
+        if (relBps > m.peakBps) m.peakBps = relBps;
+        const int64_t servedSample = (relBps > 0 ? relBps : 0) + (unrelBps > 0 ? unrelBps : 0);
+        if (m.servedSamples == 0) {
+            // Seed from the first sample rather than letting the EWMA crawl up from zero, which
+            // would hold a healthy link low for the length of the time constant.
+            m.relBps = relBps > 0 ? relBps : 0;
+            m.servedBps = servedSample;
+        } else {
+            m.relBps += ((relBps > 0 ? relBps : 0) - m.relBps) >> kServedEwmaShift;
+            m.servedBps += (servedSample - m.servedBps) >> kServedEwmaShift;
+        }
+        // Only a sample that carried traffic counts toward warmth: a connection that sat quiet
+        // before its transfer would otherwise arrive at the first chunk already "warm" on an
+        // estimate of zero, which is the same cold-start brake by another route.
+        if (servedSample > 0 && m.servedSamples < kServedWarmupSamples) ++m.servedSamples;
+        Steer_(m);
     }
     m.prevDelivered = delivered;
+    m.prevUnrel = unrel;
     m.prevSampleMs = nowMs;
     m.havePrev = true;
 
@@ -300,38 +274,35 @@ void SendRateControl::Sample(int slot, const LinkSample& in, uint64_t nowMs) {
     // GNS's min-filtered ping cannot show it.
     const int queueDelay = (m.rttLastMs >= 0 && rttMin >= 0) ? m.rttLastMs - rttMin : -1;
 
-    // NO BANDWIDTH LIMIT IS COMPUTED HERE, and the empty space is the finding. ENet's delay law
-    // moves the throttle INSIDE `packetThrottleLimit`, which `enet_host_bandwidth_throttle`
-    // (`reference/enet/host.c:376-407`) derives by dividing a bandwidth the APPLICATION CONFIGURED
-    // by what the peers offered. Ported with measured goodput in place of that configured number
-    // it is circular -- our own rate caps goodput, so the limit can never permit more than the rate
-    // that produced it -- and it seized: at rung 1 of 32 on a link carrying eight times that, in
-    // both regimes, whether the divisor was the last second or the interval's best. The margin
-    // only moves which rung it seizes at. A round trip taken on the High lane is not the signal
-    // either, since the scheduler serves that lane BEFORE the Bulk queue the transfer is standing
-    // in -- which is why the delay law above reaches this link's ceiling and keeps accelerating.
+    // `over` is the number this arc exists to bound: the rate the transport is pacing at, over the
+    // delivery the same line is reporting. The archived run that refuted the previous law ran a
+    // median of 442 here while every other field on its line looked survivable, so it is printed
+    // first among the law's fields and a field log can be read for it alone.
+    const int64_t overPct = goodput > 0 ? m.last.gnsRateBps * 100LL / goodput : -1;
 
     // Quiet while the link is idle, plus one closing line on the falling edge so the last state of
     // a finished transfer is in the log.
     if (m.sawTraffic || m.wasBusy) {
         UE_LOGI("send_rate[slot %d]: goodput=%lld B/s (peak %lld B/s) recv=%lld B/s "
-                "rate=%lld B/s thr=%d/%d gnsRate=%d B/s srtt=%d var=%d base=%d baseVar=%d "
-                "law open=%d acc=%d dec=%d dead=%d hold=%d writes=%d "
+                "rate=%lld B/s gnsRate=%d B/s over=%lld%% served=%lld B/s inflight=%lld ms "
+                "law climb=%d brake=%d anchor=%d dead=%d hold=%d writes=%d "
                 "rtt=%d ms win=%d/%d/%d (min/avg/max) rttMin=%d queueDelay=%d "
                 "ping=%d probes sent=%d echo=%d refused=%d lost=%d stray=%d skipped=%d "
                 "echoRefused=%d pendRel=%d unacked=%d pendUnrel=%d backlog=%zu "
-                "queued=%lld delivered=%lld recvd=%llu%s",
+                "queued=%lld unrel=%lld delivered=%lld recvd=%llu%s",
                 slot, static_cast<long long>(goodput), static_cast<long long>(m.peakBps),
                 static_cast<long long>(recvBps),
-                static_cast<long long>(m.rateBps), m.throttle, kThrottleScale, m.last.gnsRateBps,
-                m.rttSmoothMs, m.rttVarMs, m.rttBaseMs, m.rttBaseVarMs,
-                m.openCount, m.accelCount, m.decelCount, m.deadCount, m.holdCount, m.rateWrites,
+                static_cast<long long>(m.rateBps), m.last.gnsRateBps,
+                static_cast<long long>(overPct), static_cast<long long>(m.servedBps),
+                static_cast<long long>(m.inflightMs),
+                m.climbCount, m.brakeCount, m.anchorCount, m.deadCount, m.holdCount, m.rateWrites,
                 m.rttLastMs,
                 m.rttMinWindow, rttAvg, m.rttMaxWindow, rttMin, queueDelay, m.last.gnsPingMs,
                 m.probesSent, m.probesReplied, m.probesRefused, m.probesLost, m.probesUnknown,
                 m.probesSkipped, m.echoesRefused,
                 m.last.pendingReliable, m.last.sentUnackedReliable, m.last.pendingUnreliable,
                 m.last.backlogBytes, static_cast<long long>(queued),
+                static_cast<long long>(unrel),
                 static_cast<long long>(delivered),
                 static_cast<unsigned long long>(recv),
                 m.sawTraffic ? "" : " (idle)");
@@ -411,9 +382,11 @@ void SendRateControl::NoteProbeReply(int slot, const LinkProbePayload& reply, ui
         } else if (rtt < m.rttBucketMin[b]) {
             m.rttBucketMin[b] = rtt;
         }
-        // A closed round trip is the law's only input, so this is where it runs -- per reply, as
-        // ENet runs per acknowledgement, and never on a pass that measured nothing.
-        Throttle_(m, rtt, nowMs);
+        // The law is NOT run here, and that is the point of this change: a round trip is recorded
+        // and reported, never steered on. It stays because it is the only true round trip we can
+        // see -- the transport's own ping read 0 in every sample of both archived runs -- and
+        // because it is the cross-check that says whether the byte-derived `inflight` is telling
+        // the truth about a real link. RULE 2 exempts instruments; this is one.
         return;
     }
     // An echo for a token we do not have outstanding: a reply that came back after its probe was

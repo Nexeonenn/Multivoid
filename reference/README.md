@@ -40,7 +40,7 @@ git -C reference/enet checkout 5a9c537fd464b3c6d3c55e1d3bd47588faf71b42
 |--|--|--|--|--|
 | `mtasa-blue/` | https://github.com/multitheftauto/mtasa-blue | GPLv3 | `c07ccb00e30d973cebc4b907a9da15fab01ee6c1` | The architectural precedent: the parallel class hierarchy, the keysync packet, sessions, host-authoritative AI, the latent send queue, the server browser. **GPLv3, so SHAPES port and code does not.** |
 | `RE-UE4SS/` | https://github.com/UE4SS-RE/RE-UE4SS | MIT | `7f7cc36f8cdc082566cd676acc26975a22a41aaa` | How the engine is reached: AOB-resolved reflection, the `FUObjectArray` listener layout, the script-VM loop. **MIT, so code PORTS with per-site attribution** -- see `THIRD-PARTY-NOTICES.md`. |
-| `enet/` | https://github.com/lsalzman/enet | MIT | `5a9c537fd464b3c6d3c55e1d3bd47588faf71b42` | The congestion control neither MTA nor GameNetworkingSockets gives us: `enet_peer_throttle` (`peer.c`) and the RTT estimator that feeds it (`protocol.c`), ported as the send-rate control law. **MIT, code PORTS with attribution.** |
+| `enet/` | https://github.com/lsalzman/enet | MIT | `5a9c537fd464b3c6d3c55e1d3bd47588faf71b42` | `enet_peer_throttle` (`peer.c`) and the RTT estimator that feeds it (`protocol.c`) were ported as the send-rate control law, measured, refuted and DELETED -- the pin stays because `docs/NET_SEND_RATE_ARC.md` and `send_rate_control.h` still cite `protocol.c:908-911` for the baseline drift that refuted it. **MIT; no ENet-derived line is linked today, so it carries no notice.** |
 | `baritone/` | https://github.com/cabaletta/baritone | LGPLv3 | -- | Pathfinding precedent for the bot director. Read only; no line is cited in our source. |
 | `VoiceChatMC/` | https://github.com/henkelmax/simple-voice-chat | MIT | -- | Voice-chat RE reference (a saved page plus a clone). Read only. |
 | `voidmod-extracted/` | -- | -- | -- | An extracted VOTV mod, read for its shape. Not redistributable. |
@@ -57,7 +57,8 @@ anything.
 
 ## Licences
 
-Every tree keeps its own. Where this project actually PORTS code -- RE-UE4SS and ENet, both MIT --
-the obligation is discharged by `THIRD-PARTY-NOTICES.md`, which reproduces each licence in full
-and is tracked, public and independent of whether this directory was ever populated. MTA:SA is
+Every tree keeps its own. Where this project actually PORTS code -- RE-UE4SS today; ENet until its
+law was refuted and removed -- the obligation is discharged by `THIRD-PARTY-NOTICES.md`, which
+reproduces each shipped licence in full, drops a section when the code it covered leaves, and is
+tracked, public and independent of whether this directory was ever populated. MTA:SA is
 GPLv3 and is read for its shapes only; no MTA line is copied into this codebase.

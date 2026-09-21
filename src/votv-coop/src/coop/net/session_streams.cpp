@@ -524,6 +524,12 @@ void Session::SendStreamsTick(std::chrono::steady_clock::time_point now,
                     if (rc != k_EResultOK) { ++sendFails; return; }
                     net_stats::AddSent(static_cast<uint32_t>(bytes));
                     admission_.NoteHanded(i, bytes);
+                    // What the rate is being spent on besides the reliable stream. The send-rate
+                    // law bounds a CONNECTION-WIDE rate against measured delivery, and only the
+                    // reliable half is ever acknowledged; without this term an ordinary play
+                    // session -- pose and voice, acknowledged by nothing -- would measure as a
+                    // link delivering nothing and be clamped to the floor.
+                    rateControl_.NoteUnreliableQueued(i, bytes);
                 };
                 if (have) {
                     PosePacket pkt{};

@@ -287,8 +287,8 @@ void Session::SampleLinkRates(uint64_t nowMs) {
         // Min and Max to one number is the API's own way of saying "the application owns this
         // rate"; GNS re-reads the config on every send and think, so it lands within a packet.
         // The decision is PEEKED and only spent once both writes have gone in: a decision retired
-        // by a write that never happened would strand this link at a stale rate until the throttle
-        // next landed on a different rung.
+        // by a write that never happened would strand this link at a stale rate for as long as the
+        // law's dead band held the decision still.
         if (const int64_t want = rateControl_.PendingRateWrite(i); want > 0) {
             if (auto* utils = SteamNetworkingUtils()) {
                 // Min before Max. Each write takes the global lock separately, so a reader between

@@ -49,8 +49,10 @@ bool Session::SendVoiceFrame(const VoiceFramePayload& frame) {
             net_stats::AddSent(static_cast<uint32_t>(total));
             // Voice is the one unreliable stream sent off the net thread, so it is also the only
             // one that can fill a connection between two anchors; counting it keeps the headroom
-            // estimate from reading low.
+            // estimate from reading low. The send-rate counter beside it is an atomic for the same
+            // reason -- this is the one unreliable producer that is not the net thread.
             admission_.NoteHanded(i, total);
+            rateControl_.NoteUnreliableQueued(i, total);
             anySuccess = true;
         }
     }

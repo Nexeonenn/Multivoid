@@ -4,7 +4,7 @@
 
 #include "coop/config/config.h"           // ResolveInt / ResolveFlag, the wire knobs
 #include "coop/config/config_registry.h"  // rows::net_sendbuf_kb / net_sendrate_kbs
-#include "coop/net/send_rate_control.h"   // StartRateBps, the rung a measured link opens on
+#include "coop/net/send_rate_control.h"   // StartRateBps, the rate a measured link opens on
 #include "ue_wrap/core/log.h"
 
 #pragma warning(push)
@@ -49,7 +49,7 @@ void TuneConnection(uint32_t hConn, bool rateControlled) {
 
     // The rate the connection opens at. SendRateMin and Max are written to one value, which is the
     // GNS header's own way of saying the application owns this rate. The drill's pin wins outright;
-    // otherwise the measured-rate controller's opening rung, written HERE rather than at its first
+    // otherwise the measured-rate controller's opening rate, written HERE rather than at its first
     // decision, because between the connect and that decision the link would otherwise run at the
     // transport's ping-derived guess -- which on a thin uplink is the overdrive that controller
     // exists to end, and the admission exchange that runs before a slot exists is inside exactly

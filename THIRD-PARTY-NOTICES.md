@@ -31,7 +31,7 @@ Portions of this software are copyright (c) 2006-2024 The FreeType Project
 
 Statically linked libraries: MinHook, Dear ImGui, GameNetworkingSockets
 (bundling Abseil, WebRTC, curve25519-donna, ed25519-donna), Opus, FreeType,
-miniaudio, Protocol Buffers, OpenSSL, nlohmann/json. Ported code: RE-UE4SS, ENet.
+miniaudio, Protocol Buffers, OpenSSL, nlohmann/json. Ported code: RE-UE4SS.
 Embedded fonts: Roboto, JetBrains Mono, Cascadia Code, Fixedsys Excelsior,
 Twemoji Mozilla.
 
@@ -1016,26 +1016,6 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 ```
-
-## ENet (ported algorithms)
-
-No ENet code is linked (the transport is GameNetworkingSockets); however, ENet's peer throttle -- the congestion-control law `enet_peer_throttle` (`peer.c`) and the round-trip estimator that feeds it (`protocol.c`) -- was PORTED into this codebase's send-rate controller with per-site attribution comments, and those portions carry the upstream MIT notice. Upstream: https://github.com/lsalzman/enet. Source of this text: that repository's `LICENSE` at commit `5a9c537fd464b3c6d3c55e1d3bd47588faf71b42`, read from a local clone at `reference/enet/` (`reference/README.md` has the clone command; the tree itself is not carried by this repository).
-
-```text
-Copyright (c) 2002-2024 Lee Salzman
-
-Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
-
-```
-
----
-
-The fonts below are embedded in `main.dll` as PE resources and merged into the
-overlay's glyph atlas at runtime.
 
 ## Roboto
 

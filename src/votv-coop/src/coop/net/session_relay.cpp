@@ -54,8 +54,10 @@ void Session::RelayUnreliableToOtherClients(int originSlot, const void* data, in
         if (rc == k_EResultOK) {
             net_stats::AddSent(static_cast<uint32_t>(len));
             // The relay fills OTHER peers' send buffers, so it is a producer the headroom
-            // estimate has to see, exactly like the direct fan-out beside it.
+            // estimate has to see, exactly like the direct fan-out beside it -- and for the same
+            // reason it is unreliable load the send-rate law must count against the rate it bounds.
             admission_.NoteHanded(i, len);
+            rateControl_.NoteUnreliableQueued(i, len);
         }
     }
 }
