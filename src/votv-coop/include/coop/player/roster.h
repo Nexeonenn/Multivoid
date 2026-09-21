@@ -73,9 +73,12 @@ void Refresh();
 // Copy the latest snapshot. Safe from ANY thread (the render thread reads it).
 void GetSnapshot(Snapshot& out);
 
-// Lock-free read of just "is the local peer the host?" -- the overlay checks this
-// on a hot path (the SetCursorPos detour) to decide capture, so it must not copy
-// the whole snapshot under the mutex. Updated by Refresh. Any thread.
+// Lock-free read of "am I the HOST OF A LIVE SESSION?" -- the ROLE question, which every caller
+// asks to decide whether a host-only surface or a host-only key binding is theirs. Deliberately
+// NOT the snapshot's `localIsHost`, which is true out of session as well (the board shows the row
+// you would occupy once you started one): a solo player is not a host. The overlay checks this on
+// a hot path (the SetCursorPos detour) to decide capture, so it must not copy the whole snapshot
+// under the mutex. Updated by Refresh. Any thread.
 bool LocalIsHost();
 
 }  // namespace coop::roster

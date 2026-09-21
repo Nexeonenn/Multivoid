@@ -21,7 +21,12 @@ std::atomic<coop::net::Session*> g_session{nullptr};
 
 std::mutex g_mutex;
 Snapshot   g_snap;            // guarded by g_mutex
-std::atomic<bool> g_localIsHost{false};  // lock-free mirror of g_snap.localIsHost
+// The lock-free ROLE answer, which is not the snapshot's display field: `localIsHost` is true out
+// of session too, because the board synthesises the row you would occupy once you started one. The
+// three consumers of the accessor ask a different question -- am I the host of a live session --
+// and a solo player answering yes to that was offered the host administration pane and had the
+// scoreboard key change behaviour under them. Session AND host, so the two never diverge again.
+std::atomic<bool> g_localIsHost{false};
 unsigned long long g_lastMs = 0;  // throttle stamp (game thread only)
 
 }  // namespace
@@ -65,7 +70,7 @@ void Refresh() {
         }
         // Publish the lock-free mirror AFTER the snapshot is visible: a reader that
         // observes the new role via acquire then also sees the matching snapshot.
-        g_localIsHost.store(snap.localIsHost, std::memory_order_release);
+        g_localIsHost.store(snap.inSession && snap.localIsHost, std::memory_order_release);
         return;
     }
 
@@ -117,7 +122,7 @@ void Refresh() {
         std::lock_guard<std::mutex> lk(g_mutex);
         g_snap = snap;
     }
-    g_localIsHost.store(snap.localIsHost, std::memory_order_release);
+    g_localIsHost.store(snap.inSession && snap.localIsHost, std::memory_order_release);
 }
 
 void GetSnapshot(Snapshot& out) {

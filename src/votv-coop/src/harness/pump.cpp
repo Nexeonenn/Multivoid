@@ -2,8 +2,6 @@
 
 #include "harness/pump.h"
 
-#include "harness/session_runtime.h"   // Session(): the process's one session object
-
 #include "coop/comms/chat_feed.h"
 #include "coop/dev/object_overlay.h"
 #include "coop/dev/ragdoll_bone_overlay.h"
@@ -26,23 +24,35 @@ namespace GT = ue_wrap::game_thread;
 std::atomic<bool> g_queued{false};
 uint64_t g_lastDrain = 0;   // game thread
 
+// The session this pump ticks, handed over at boot rather than reached for: the pump is a leaf,
+// and a module that calls up into the lifecycle driver that calls it is a cycle nothing needs.
+std::atomic<coop::net::Session*> g_session{nullptr};
+
 }  // namespace
 
-void PostComposite(GT::Task body) {
+bool BeginComposite() {
     bool idle = false;
-    if (!g_queued.compare_exchange_strong(idle, true, std::memory_order_acq_rel)) return;
-    GT::Post([body = std::move(body)] {
-        struct Clear { ~Clear() { g_queued.store(false, std::memory_order_release); } } clear;
-        const uint64_t drain = GT::DrainSerial();
-        if (drain == g_lastDrain) return;
-        g_lastDrain = drain;
-        body();
-    });
+    return g_queued.compare_exchange_strong(idle, true, std::memory_order_acq_rel);
+}
+
+void EndComposite() { g_queued.store(false, std::memory_order_release); }
+
+bool CompositeDrainIsNew() {
+    const uint64_t drain = GT::DrainSerial();
+    if (drain == g_lastDrain) return false;
+    g_lastDrain = drain;
+    return true;
+}
+
+void SetSession(coop::net::Session* session) {
+    g_session.store(session, std::memory_order_release);
 }
 
 void PostMenuTick() {
     PostComposite([] {
-        coop::net_pump::Tick(harness::session_runtime::Session());
+        coop::net::Session* s = g_session.load(std::memory_order_acquire);
+        if (!s) return;
+        coop::net_pump::Tick(*s);
         coop::nameplate::Update();
         coop::dev::object_overlay::Update(); coop::dev::ragdoll_bone_overlay::Update();
         coop::chat_feed::Tick();
@@ -51,7 +61,8 @@ void PostMenuTick() {
 }
 
 void TickShutdownHooks() {
-    coop::net::Session* s = &harness::session_runtime::Session();
+    coop::net::Session* s = g_session.load(std::memory_order_acquire);
+    if (!s) return;
     coop::shutdown::Install(s);
     coop::shutdown::UpdateWindowTitle();
     coop::death_revive::Install(s);

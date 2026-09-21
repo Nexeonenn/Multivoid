@@ -44,19 +44,28 @@ struct Offsets {
 
 Offsets g_off;
 void*   g_matInstClass = nullptr;
-void*   g_gamemodeClass = nullptr;
 void*   g_refreshFn    = nullptr;
 
-// The gamemode, cached the same way and for the same reason as the game instance below. Resolved
-// HERE rather than borrowed from another module: the one shared accessor this used to call
-// resolves its class inside a pass that a coop session drives, so off a session it answered null
-// forever and every read here failed -- the bar's icons have nothing to do with sleeping, and a
-// wrapper that borrows a neighbour's cache inherits the neighbour's driver.
+// The gamemode. Resolved HERE rather than borrowed from another module: the one shared accessor
+// this used to call resolves its class inside a pass that a coop session drives, so off a session
+// it answered null forever and every read here failed -- the bar's icons have nothing to do with
+// sleeping, and a wrapper that borrows a neighbour's cache inherits the neighbour's driver.
+//
+// NOT cached the way the game instance below is, and the difference is the whole point: the game
+// instance outlives every world, so its miss happens once per process, while the gamemode dies at
+// each teardown and a miss repeats. An unthrottled miss is a full object-array walk per reader
+// tick -- the pattern the perf rule forbids -- so the miss is throttled exactly as Resolve()
+// throttles its own, and a negative answer stands until the next window.
 ue_wrap::CachedObjRef g_gamemode;
 
 void* Gamemode() {
     if (g_gamemode.Alive()) return g_gamemode.Get();
-    if (!g_gamemodeClass) return nullptr;
+    static std::chrono::steady_clock::time_point s_lastTry{};
+    const auto now = std::chrono::steady_clock::now();
+    if (s_lastTry != std::chrono::steady_clock::time_point{} &&
+        now - s_lastTry < std::chrono::seconds(1))
+        return nullptr;
+    s_lastTry = now;
     g_gamemode.Set(R::FindObjectByClass(P::name::GamemodeClass));
     return g_gamemode.Get();
 }
@@ -91,7 +100,6 @@ bool Resolve() {
     void* giCls = R::FindClass(kGameInst);
     g_matInstClass = R::FindClass(kMatInst);
     if (!gmCls || !uiCls || !ppCls || !giCls || !g_matInstClass) return false;
-    g_gamemodeClass = gmCls;
 
     Offsets o;
     o.playerInterface = R::FindPropertyOffset(gmCls, L"playerInterface");

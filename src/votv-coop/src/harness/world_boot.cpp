@@ -73,6 +73,20 @@ void ReturnToMenuAfterFailedHost() {
 }  // namespace
 
 bool BootStorySaveBlocking(bool forceFresh, const wchar_t* slotOverride, int forceGameMode) {
+    // ONE world load at a time, whoever asks. Two threads can reach this now -- the TimelineThread
+    // driving a join, and the menu-autoload worker -- and two concurrent loads do not corrupt each
+    // other's state (nothing here is static) but they do race the engine's `open` and the host-slot
+    // string behind it. A second entrant is refused by name rather than left to an undefined
+    // window, which is the answer this owes under the mid-activity-join rule.
+    static std::atomic<bool> s_loading{false};
+    bool idle = false;
+    if (!s_loading.compare_exchange_strong(idle, true, std::memory_order_acq_rel)) {
+        UE_LOGW("harness: a world load is already running -- refusing a second one ('%ls')",
+                slotOverride ? slotOverride : L"<configured slot>");
+        return false;
+    }
+    struct Release { ~Release() { s_loading.store(false, std::memory_order_release); } } _r;
+
     // A blank New Game is the deterministic baseline the host's snapshot mirrors onto; chosen by
     // `forceFresh`, by VOTVCOOP_FRESH=1 (the test launcher sets it for the client) or by the
     // fresh_boot ini row.
@@ -253,8 +267,13 @@ void DriveHostBootIfPending() {
         bool created = false;
         std::atomic<int> st{0};  // 0 pending,1 retry,2 in-gameplay,3 fail
     };
+    // The queue is drained FIRST: this runs every idle tick of the play loop, and allocating the
+    // per-boot state before asking whether there is a boot cost one control block and one string
+    // per tick, forever, for nothing.
+    coop::session_manager::PendingHost pending;
+    if (!coop::session_manager::TakePendingHostWithSave(pending)) return;
     auto b = std::make_shared<Boot>();
-    if (!coop::session_manager::TakePendingHostWithSave(b->ph)) return;
+    b->ph = std::move(pending);
     if (!b->ph.save.newGame) b->slot.assign(b->ph.save.slot.begin(), b->ph.save.slot.end());  // ASCII
     b->created = !b->ph.save.newGame;  // existing save: nothing to create
 

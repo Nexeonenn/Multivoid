@@ -266,13 +266,19 @@ int LobbyPlayerCount() {
     return g_session.connectedPeerCount() + 1;
 }
 
-// Is a gameplay world up RIGHT NOW? Asked of the module that owns world identity rather than of
-// a boot parameter, because the two are not the same question and a launch that reaches gameplay
+// Is a gameplay world up RIGHT NOW? Asked of the module that owns world identity rather than of a
+// boot parameter, because the two are not the same question and a launch that reaches gameplay
 // later answers them differently. Free to ask: the memo behind it refreshes at 10 Hz on the game
-// thread and every other call is an atomic load, so this is not the per-frame object-array scan
-// the perf rule forbids. Unknown is not Gameplay on purpose -- a gate that STARTS something wants
-// a positive answer, and the kind is legitimately Unknown for about a second across every travel.
+// thread and every other call is an atomic load. Unknown is not Gameplay on purpose -- a gate that
+// STARTS something wants a positive answer, and the kind is Unknown across every travel.
+//
+// DEGRADED fails OPEN, the direction world_identity's header prescribes: a recook that renames one
+// of the three properties the chain needs leaves the kind Unknown for the life of the process, and
+// reading that as "no world" would take the observers below off every path again -- this split's
+// own defect, reintroduced by its instrument. Nothing here fears a false positive: the branch is
+// reached only with no session, and everything it starts re-asks for itself.
 bool InGameplayWorld() {
+    if (ue_wrap::world_identity::Degraded()) return true;
     return ue_wrap::world_identity::CurrentWorldKind() ==
            ue_wrap::world_identity::WorldKind::Gameplay;
 }
@@ -329,18 +335,22 @@ void RunPlayLoop(bool bootedIntoGameplay) {
                     } else {
                         UE_LOGI("harness: browser-initiated coop session");
                         // The menu-mode client join: connect at the menu, download the host's save,
-                        // load that world (the engine places every prop naturally, with the host's
-                        // keys), then net_pump announces world-ready and the host replays; the
-                        // player never sees a divergent fresh world. ONE fallback survives: a
-                        // host that genuinely has no save, which is an answer and not a timeout.
-                        // A failed transfer or a world that will not load ends the join by name.
-                        // Blocks the TimelineThread, the abort drained inside. The boot fact, not
-                        // a live world test: the direct arm exists for a process that auto-loaded
-                        // its OWN world at boot, which is the LAN rigs, where both peers were given
-                        // the same save. A player who reaches a solo world through the game's menu
-                        // must still download the host's -- their own world is not the one the join
-                        // is about.
-                        if (pending.role == coop::net::Role::Client && !bootedIntoGameplay) {
+                        // load that world, then net_pump announces world-ready and the host
+                        // replays; the player never sees a divergent fresh world. ONE fallback
+                        // survives, a host that genuinely has no save, which is an answer and not
+                        // a timeout; a failed transfer or a world that will not load ends the join
+                        // by name. Blocks the TimelineThread, the abort drained inside.
+                        //
+                        // BOTH halves below are required. The direct arm exists for a process that
+                        // auto-loaded its OWN world at boot -- the LAN rigs, where both peers were
+                        // given the same save -- AND that is still standing in it. The boot fact
+                        // alone is this split's own defect one consumer later: a rig that quit to
+                        // the menu, or whose host session ended and fled there, still answers yes
+                        // and would connect with no world to connect in. A player who reaches a
+                        // solo world through the game's own menu answers no to the boot half and
+                        // downloads the host's, which is right -- their world is not the join's.
+                        if (pending.role == coop::net::Role::Client &&
+                            !(bootedIntoGameplay && InGameplayWorld())) {
                             UE_LOGI("harness: menu-mode client join -- save-transfer bootstrap");
                             coop::save_transfer::ClientArm();
                             // A synchronous Start failure means no connect edge will ever clear the

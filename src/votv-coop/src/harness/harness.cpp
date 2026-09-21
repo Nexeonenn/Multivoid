@@ -5,6 +5,7 @@
 
 #include "harness/harness.h"
 
+#include "harness/pump.h"
 #include "harness/session_runtime.h"
 #include "harness/world_boot.h"
 #include "coop/session/rig_ready.h"
@@ -326,7 +327,7 @@ DWORD WINAPI TimelineThread(LPVOID param) {
             } else {
                 // The env client goes through the same session_manager door as the browser: the
                 // connect raises the join cover and queues the start, and RunPlayLoop (entered with
-                // idleInGameplay false) drains it through the one menu-mode join branch. It dials
+                // not booted into gameplay) drains it through the one menu-mode join branch. It dials
                 // the way its topology says: unconditionally direct, a P2P client silently
                 // connected over IP, and the P2P smoke proved only the host half.
                 if (netCfg.topology == coop::net::Topology::P2P) {
@@ -481,6 +482,9 @@ void Start() {
     // The player-list scoreboard (a second overlay surface, on tilde); the roster reads this
     // session.
     coop::roster::SetSession(&session_runtime::Session());
+    // And the per-tick pump, for the same reason and in the same place: it is handed the session
+    // rather than reaching back into the lifecycle driver that drives it.
+    pump::SetSession(&session_runtime::Session());
     if (!ui::imgui_overlay::Init()) {
         UE_LOGW("harness: imgui_overlay::Init failed -- F1 menu unavailable this run");
     }

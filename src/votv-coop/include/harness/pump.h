@@ -7,7 +7,20 @@
 
 #include "ue_wrap/core/game_thread.h"
 
+#include <utility>
+
+namespace coop::net { class Session; }
+
 namespace harness::pump {
+
+// The session every tick below drives, handed over once at process boot. Nothing here works
+// before it, and each call is a no-op until it arrives.
+void SetSession(coop::net::Session* session);
+
+// The coalescing itself, split out so the template below stays a thin header body.
+bool BeginComposite();
+void EndComposite();
+bool CompositeDrainIsNew();
 
 // Post `body` as this tick's composite. The TimelineThread posts at 60 Hz and the game thread
 // runs posted tasks only at an outermost dispatch, so one script body -- a blocking world
@@ -19,7 +32,19 @@ namespace harness::pump {
 // flag clears as the composite returns, a faulting body included (the image unwinds destructors
 // on a structured exception), so one faulted composite cannot stop the next. Composites are
 // idempotent per-tick logic, so a skipped post or body is not lost work.
-void PostComposite(ue_wrap::game_thread::Task body);
+//
+// A TEMPLATE on purpose: a caller's composite closure is a couple of bytes and rides inside
+// std::function's small-object buffer, while taking it as a std::function here would wrap one
+// inside another and heap-allocate on every post, sixty times a second.
+template <typename Body>
+void PostComposite(Body&& body) {
+    if (!BeginComposite()) return;
+    ue_wrap::game_thread::Post([body = std::forward<Body>(body)] {
+        struct Clear { ~Clear() { EndComposite(); } } clear;
+        if (!CompositeDrainIsNew()) return;
+        body();
+    });
+}
 
 // The composite every wait loop OUTSIDE gameplay posts: the session tick the save transfer lives
 // in, the nameplates, the dev overlays, the chat feed and the shutdown hooks. The loop that waits
