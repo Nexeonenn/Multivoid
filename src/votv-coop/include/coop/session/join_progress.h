@@ -117,6 +117,26 @@ void NoteDownload(uint32_t doneBytes, uint32_t totalBytes);
 // can legally follow.
 void BeginWorldLoad();
 
+// WHY THIS CLIENT HAS NOT ANNOUNCED WORLD-READY YET. Between the engine reaching gameplay and
+// the announce sit gates that are this machine's own, and four of the five carry no deadline of
+// their own: a local player that never resolves, and three registry-coherence reads. The fifth,
+// the load-tail quiescence probe, carries its own 120 s ceiling and always latches. Until B2 the
+// only thing standing behind any of them was the 240 s whole-join failsafe, which is deleted --
+// so the pump names the gate it is blocked on, once a tick, and the phase waits on THAT changing.
+// The same rule as the host's beacon, pointed at ourselves.
+enum class WorldGate : uint8_t {
+    None = 0,
+    NoLocalPlayer,       // no possessed local player in a gameplay world yet
+    RegistryUnseeded,    // the prop registry has never seeded
+    RegistryOtherWorld,  // it is seeded, but for a world that is not the one we loaded
+    RegistryPurging,     // it is draining a dead world
+    WorldSettling,       // the load tail has not quiesced -- the ONE gate with its own bound
+};
+
+// The pump's per-tick report while the announce is pending. A gate that CHANGED is progress; the
+// same gate again is not, and is not logged either. Client, game thread.
+void NoteWorldReadyGate(WorldGate gate);
+
 // This client announced world-ready: the wait is the host's from here (its bracket, deferred or
 // streaming). Driven by the pump at the announce. Accepts LoadingWorld (a menu-mode join whose
 // world just came up) and Connecting (an in-gameplay join, which never downloaded or loaded
@@ -181,17 +201,20 @@ bool Active();        // phase != Idle (the cover should be drawn)
 Phase CurrentPhase(); // one atomic load; stages are forwarded only while Connecting
 View Snapshot();      // thread-safe copy of the current state
 
-// The phase watchdogs, and behind them the whole-join failsafe.
+// The phase watchdogs. There is nothing behind them.
 //
 // Each phase waits on a TOKEN that must keep advancing -- a byte of the download, a prop of the
-// bracket, or the host's beacon saying it is still working -- and fails with a reason naming that
-// phase when it stops. Phases whose legitimate durations are independent and additive cannot share
-// one budget: the failsafe below spans the dial, the host's capture, the download, the engine's
-// world load and the bracket, so all it can ever say is that the sum ran long, which is the guess
-// the field dialog was printing. The engine's world load is deliberately NOT watched here: it is
-// local and opaque, and the boot loop owns its cap.
+// bracket, the host's beacon moving its numerator, or this machine's own announce gate changing --
+// and fails with a reason naming that phase when it stops. Phases whose legitimate durations are
+// independent and additive cannot share one budget: the failsafe that used to sit behind these
+// spanned the dial, the host's capture, the download, the engine's world load and the bracket, so
+// all it could ever say was that the sum ran long, which is the guess the field dialog was
+// printing. It is deleted, and no phase inherited its job.
 //
-// Called each frame from the render path; cheap and idempotent.
+// Driven from harness::TickPumpWatchdogs, i.e. from the TimelineThread loops that drive the join
+// itself -- NOT from the render. An overlay that fails to install is non-fatal and the game boots
+// on without it, and a watchdog reachable only through the Present hook is dead for that whole
+// session. Cheap and idempotent; call it as often as you like.
 void MaybeTimeout();
 
 }  // namespace coop::join_progress

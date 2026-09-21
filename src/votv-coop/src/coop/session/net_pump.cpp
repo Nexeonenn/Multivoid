@@ -397,11 +397,23 @@ void Tick(coop::net::Session& session) {
     const bool reAnnounce = g_reAnnounceWorldReady.load(std::memory_order_relaxed);
     if (!isHost && isConnected &&
         (!g_worldReadyAnnounced.load(std::memory_order_relaxed) || reAnnounce)) {
-        if (worldUp &&
-            coop::prop_element_tracker::HasSeededOnce() &&
-            coop::prop_element_tracker::IsRegistrySeededForCurrentWorld() &&
-            !coop::prop_element_tracker::InPurgeEpisode() &&
-            coop::world_load_episode::TickQuiesceProbe()) {
+        // Name the gate BEFORE testing the rest: four of these five have no deadline of their
+        // own, and with the whole-join failsafe deleted the joiner's phase token is what stands
+        // behind them. TickQuiesceProbe must still run every tick, so it is called first and its
+        // result reused -- naming a gate must never cost the probe a tick.
+        const bool seeded   = coop::prop_element_tracker::HasSeededOnce();
+        const bool thisWorld = seeded && coop::prop_element_tracker::IsRegistrySeededForCurrentWorld();
+        const bool purging  = coop::prop_element_tracker::InPurgeEpisode();
+        const bool quiesced = coop::world_load_episode::TickQuiesceProbe();
+        using WG = coop::join_progress::WorldGate;
+        coop::join_progress::NoteWorldReadyGate(
+            !worldUp    ? WG::NoLocalPlayer
+            : !seeded   ? WG::RegistryUnseeded
+            : !thisWorld ? WG::RegistryOtherWorld
+            : purging   ? WG::RegistryPurging
+            : !quiesced ? WG::WorldSettling
+                        : WG::None);
+        if (worldUp && seeded && thisWorld && !purging && quiesced) {
             if (session.SendReliableToSlot(0, coop::net::ReliableKind::ClientWorldReady,
                                            nullptr, 0)) {
                 g_worldReadyAnnounced.store(true, std::memory_order_relaxed);
@@ -517,7 +529,7 @@ void Tick(coop::net::Session& session) {
     }
     // The client connect-failure edge: a browser join that never reached Connected (a dead address,
     // the host not up). The aggregate edge above needs g_wasConnected to have latched, so without
-    // this the loading screen would hang on "Connecting..." until the 90 s failsafe. Precise:
+    // this the loading screen would hang on "Connecting..." with no phase token moving. Precise:
     // client role, a join Active, never connected, the state back at Disconnected. Fail() is
     // idempotent.
     if (!isHost && !g_wasConnected && coop::join_progress::Active() &&

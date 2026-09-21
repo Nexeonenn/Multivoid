@@ -195,8 +195,8 @@ void ClearDrainState_() {
 // healthy link and a loaded world, waiting on a bracket this host is holding, is the shape the
 // failure dialog used to guess at; a knob that produces it on demand is what lets the joiner's
 // answer be measured instead of argued. Per slot, steady-clock milliseconds; 0 = not held here.
-// Its expiry re-triggers the slot itself, because the tree's only retry today is a world
-// transition -- which is the defect, and not something the instrument should have to stage.
+// Its expiry needs no release of its own: the deferred-slot cadence retries every held slot once
+// a second and brackets it the moment the hold lifts, by the same path a real defer takes.
 int64_t g_drillHoldUntilMs[coop::players::kMaxPeers]{};
 
 // True while the drill is holding this slot's bracket; arms the deadline on the first ask.
@@ -637,6 +637,7 @@ size_t OnDisconnect() {
     for (int slot = 0; slot < coop::players::kMaxPeers; ++slot) {
         g_deferRetryAtMs[slot] = 0;
         g_deferLogged[slot] = DeferReason::None;
+        g_drillHoldUntilMs[slot] = 0;  // no session inherits the previous one's hold deadline
     }
     g_drainSeedGen = 0;
     return pending;

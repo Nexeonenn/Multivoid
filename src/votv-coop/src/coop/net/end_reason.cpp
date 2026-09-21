@@ -47,6 +47,7 @@ constexpr Row kRows[] = {
     {EndReason::WorldWouldNotLoad,     {"MV-J24", "The host's world would not load on this machine."}},
     {EndReason::WorldUnusable,         {"MV-J25", "The host's world arrived damaged and could not be used."}},
     {EndReason::ProfileNotSent,        {"MV-J26", "The host never sent your inventory."}},
+    {EndReason::WorldNeverSettled,     {"MV-J27", "Your game loaded the world but never finished settling into it."}},
     // H -- the host decided
     {EndReason::WrongPassword,           {"MV-H01", "Wrong password."}},
     {EndReason::PasswordRequired,        {"MV-H02", "This server needs a password."}},

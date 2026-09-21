@@ -48,6 +48,9 @@ std::atomic<uint32_t> g_hostBeacons{0};  // beacons heard this attempt; the join
 // When the last beacon ARRIVED. Not a failure trigger -- only the word the failure line uses, so a
 // report can tell a host that went quiet from one that answered all along and got nowhere.
 std::atomic<int64_t>  g_hostBeaconMs{0};
+// Which of the announce gates this client is held on, and what it was when last reported. The
+// watchdog reads the phase token; this only names the gate in the failure sentence.
+std::atomic<uint8_t>  g_worldGate{0};
 std::atomic<bool>     g_abortReq{false};  // Cancel button OR a connect failure -> harness drains (Stop + reopen browser)
 
 std::mutex  g_hostMu;
@@ -104,8 +107,14 @@ PhaseWatch WatchFor(Phase ph, Stage st) {
         return {0, EndReason::None, ""};
     case Phase::Downloading:
         return {20'000, EndReason::WorldDownloadStalled, "no byte of the world arrived"};
-    // LoadingWorld: local, opaque and owned by the boot loop -- watching it here would put a
-    // network clock on an engine level load.
+    // LoadingWorld spans two things the engine load, which is opaque and blocks the game thread
+    // so no watchdog here can tick through it, and the window AFTER it, where the render is alive
+    // and this client is waiting on its own announce gates. The budget is on the second: it starts
+    // when the pump first names a gate, and only a gate that CHANGED renews it. 150 s clears the
+    // quiescence probe's own 120 s ceiling, the one gate that legitimately holds this long.
+    case Phase::LoadingWorld:
+        return {150'000, EndReason::WorldNeverSettled,
+                "this machine never finished settling into the world it loaded"};
     case Phase::AwaitingWorldStream:
     case Phase::Receiving:
         return {30'000, EndReason::HostWorldNotSent, "the host never sent the world it owed"};
@@ -124,6 +133,18 @@ const char* HostPhaseName(uint8_t p) {
     case coop::net::HostJoinPhase::StreamingSnapshot: return "streaming the bracket";
     }
     return "in a phase this build does not know";
+}
+
+const char* WorldGateName(uint8_t g) {
+    switch (static_cast<WorldGate>(g)) {
+    case WorldGate::NoLocalPlayer:      return "no local player has appeared in the loaded world";
+    case WorldGate::RegistryUnseeded:   return "the prop registry has not seeded once";
+    case WorldGate::RegistryOtherWorld: return "the prop registry expresses a different world";
+    case WorldGate::RegistryPurging:    return "the prop registry is still draining a dead world";
+    case WorldGate::WorldSettling:      return "the load tail has not settled";
+    case WorldGate::None:               return "nothing -- every gate is clear";
+    default:                            return "a gate this build does not name";
+    }
 }
 
 const char* PhaseName(Phase p) {
@@ -177,6 +198,7 @@ void ResetCounters() {
     g_hostTotal.store(0, std::memory_order_relaxed);
     g_hostBeacons.store(0, std::memory_order_relaxed);
     g_hostBeaconMs.store(0, std::memory_order_relaxed);
+    g_worldGate.store(0, std::memory_order_relaxed);
 }
 
 }  // namespace
@@ -247,7 +269,6 @@ void BeginSnapshot(uint32_t propTotal) {
         ph != Phase::Receiving) return;
     g_total.store(propTotal, std::memory_order_relaxed);
     g_applied.store(0, std::memory_order_relaxed);
-    if (g_startMs.load(std::memory_order_relaxed) == 0) g_startMs.store(NowMs(), std::memory_order_relaxed);
     g_stageStartMs.store(NowMs(), std::memory_order_relaxed);
     StampToken();
     g_phase.store(static_cast<int>(Phase::Receiving), std::memory_order_release);
@@ -325,6 +346,18 @@ void NoteWorldReady() {
             return;
         }
     }
+}
+
+void NoteWorldReadyGate(WorldGate gate) {
+    if (!Active()) return;
+    if (g_mode.load(std::memory_order_relaxed) != static_cast<int>(Mode::Client)) return;
+    const uint8_t g = static_cast<uint8_t>(gate);
+    if (g_worldGate.exchange(g, std::memory_order_relaxed) == g) return;  // liveness, not progress
+    // A CHANGED gate is this machine making its way forward, and it re-bases the wait. The first
+    // report after the engine load does too, which is what keeps the load's own seconds -- spent
+    // with no frames and no ticks -- out of the budget that follows it.
+    StampToken();
+    UE_LOGI("join_progress: waiting on this machine -- %s", WorldGateName(g));
 }
 
 void NoteHostBeacon(uint8_t phase, uint32_t done, uint32_t total) {
@@ -523,7 +556,13 @@ void MaybeTimeout() {
         const int64_t beaconMs = g_hostBeaconMs.load(std::memory_order_relaxed);
         const uint8_t hp = g_hostPhase.load(std::memory_order_relaxed);
         char detail[224];
-        if (hp != 0 && beaconMs != 0 && now - beaconMs <= kBeaconFreshMs) {
+        // LoadingWorld is the one phase whose blocker is OURS, so it names our own gate; the host
+        // is not at fault and the sentence must not point at it.
+        if (ph == Phase::LoadingWorld) {
+            std::snprintf(detail, sizeof(detail),
+                          "%s: %s, and nothing has changed in %llds", PhaseName(ph),
+                          WorldGateName(g_worldGate.load(std::memory_order_relaxed)), stuckS);
+        } else if (hp != 0 && beaconMs != 0 && now - beaconMs <= kBeaconFreshMs) {
             std::snprintf(detail, sizeof(detail),
                           "%s: the host says it is %s and nothing has moved in %llds (%u/%u)",
                           PhaseName(ph), HostPhaseName(hp), stuckS,

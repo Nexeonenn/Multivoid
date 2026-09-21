@@ -24,7 +24,6 @@
 #include "coop/props/save_identity_bind.h"
 #include "coop/props/save_identity_map.h"
 #include "coop/props/trash_channel.h"      // ClientCarryEid / SendGrabIntent / SendThrowIntent / ClearClientCarry
-#include "coop/save/save_transfer.h"      // RecordGrabTimePileXform
 #include "ue_wrap/engine/engine.h"                // ReadMainPlayerLookAtActor / GetCamera{Location,Rotation}
 #include "ue_wrap/core/game_thread.h"           // RegisterInterceptor / RegisterPreObserver
 #include "ue_wrap/core/log.h"

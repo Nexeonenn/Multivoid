@@ -57,12 +57,14 @@ enum class EndReason : uint8_t {
     HostWorldNotPrepared,   // the host never finished capturing the world it owed this joiner
     WorldDownloadStalled,   // no byte of the world blob arrived for the download's budget
     HostWorldNotSent,       // the world bracket never came: the host held it, or stopped answering
-    // The last two are LOCAL: the host did everything it owed and this machine could not use it.
-    // Both used to boot a fresh world instead and finish the join in it, telling the player
-    // nothing -- a joiner standing in a world that is not the host's.
+    // The last four are LOCAL: the host did what it owed and this machine could not use it. The
+    // first two used to boot a fresh world instead and finish the join in it, telling the player
+    // nothing -- a joiner standing in a world that is not the host's; the third loaded anyway with
+    // the host's items emptied out; the fourth is a wait that had no watcher at all.
     WorldWouldNotLoad,      // the engine never reached gameplay with the world we received
     WorldUnusable,          // the world arrived damaged: the CRC failed, or it could not be written
     ProfileNotSent,         // the host never sent this player's inventory, so the world would load without it
+    WorldNeverSettled,      // the world came up and this machine never got ready to announce it
 
     // H -- the host decided; rides the transport's application end reason. Values 40..89.
     WrongPassword = 40,
@@ -105,7 +107,7 @@ enum class EndReason : uint8_t {
     // Each family's bounds, for the table's completeness check: a family is contiguous from its
     // first enumerator, so the row count must equal the sum of the three spans.
     kJoinerFirst = MasterUnreachable,
-    kJoinerLast = ProfileNotSent,
+    kJoinerLast = WorldNeverSettled,
     kHostFirst = WrongPassword,
     kHostLast = ConnectFlood,
     kTransportFirst = Timeout,

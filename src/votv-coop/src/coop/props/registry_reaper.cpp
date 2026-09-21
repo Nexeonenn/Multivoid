@@ -194,7 +194,7 @@ bool Tick(coop::net::Session& session) {
         // Already-connected peers catch up to the now-complete prop set: their connect snapshot
         // enumerated the pre-re-seed registry (if the coherence gate let it run at all), so the
         // per-slot snapshot re-triggers, re-enumerates at dequeue, and the client dedupes what it
-        // holds. Host only. Deferred joiners are independent: the re-seed's generation bump wakes
+        // holds. Host only. Deferred joiners are independent: their own one-second retry cadence wakes
         // them.
         auto retriggerReadySlots = [&session]() {
             if (session.role() != coop::net::Role::Host) return;

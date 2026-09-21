@@ -49,7 +49,6 @@ bool IsOpen() { return jp::Active(); }
 void Close() { jp::Reset(); }
 
 void Render() {
-    jp::MaybeTimeout();          // failsafe each frame (cheap; no-op unless stuck)
     const jp::View v = jp::Snapshot();
     if (v.phase == jp::Phase::Idle) return;
 

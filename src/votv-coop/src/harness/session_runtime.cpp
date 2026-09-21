@@ -113,6 +113,15 @@ void TickShutdownHooks() {
 // failure it exists for. It runs on the thread that POSTS the composite instead. Safe there: it
 // touches atomics and posts its flee.
 void TickPumpWatchdogs() {
+    // THE JOIN WATCHDOG LIVES HERE, not on the render. Every phase budget in join_progress used to
+    // be reachable only through ui::loading_screen::Render, i.e. through the ImGui overlay's
+    // Present hook -- and harness.cpp treats a failed overlay install as non-fatal and boots on,
+    // because the multiplayer entry point is a native UMG button, not ours. In a session like that
+    // every join budget was dead, and the deleted 120 s transfer cap had been the last bound that
+    // did not need a frame. This function is called from all three timeline loops that a join can
+    // be inside -- the transfer wait, the inventory wait and RunPlayLoop -- so the token that ends
+    // a join is now driven by the thread that drives the join.
+    coop::join_progress::MaybeTimeout();
     coop::death_revive::Watchdog();
 }
 
@@ -182,7 +191,9 @@ void SpawnSecondPlayerWhenReady() {
             UE_LOGI("play: mainPlayer_C ready @ (%.0f,%.0f,%.0f) -- spawning puppet", p.X, p.Y, p.Z);
             state->store(coop::puppet_drive::Puppet(1).Spawn() ? 2 : 3);
         });
-        while (state->load() == 0) ::Sleep(5);  // let the posted check run (~1 frame)
+        // Shutdown-aware like its two siblings: a posted task the game thread never drains holds
+        // this thread for as long as that lasts.
+        while (state->load() == 0 && !coop::shutdown::IsShuttingDown()) ::Sleep(5);
         const int s = state->load();
         if (s == 2) {
             UE_LOGI("play: 2nd player spawned the moment the local player was ready");
@@ -265,10 +276,10 @@ void FailJoinNoWorld_(coop::net::EndReason code, const char* detail) {
 }
 
 // The menu-mode join's world boot: wait for the save transfer (the session is already connecting
-// at the menu), then load the downloaded slot; any failure falls back to the fresh-boot baseline,
-// which the true-up handles more heavily. It blocks the TimelineThread, so RunPlayLoop's abort
-// branch cannot run meanwhile and the Cancel, the cover timeout and a dead session are drained
-// here.
+// at the menu), then load the downloaded slot. A failure at any step ends the join with a named
+// reason and reopens the browser -- it does not fall back to a world of its own. It blocks the
+// TimelineThread, so RunPlayLoop's abort branch cannot run meanwhile and the Cancel, the phase
+// watchdog's abort and a dead session are drained here.
 void DriveMenuModeJoinWorldBoot() {
     namespace ST = coop::save_transfer;
     // NO CLOCK ON THIS LOOP. It ends when the transfer reaches a state, when the player cancels,
@@ -689,10 +700,10 @@ void RunPlayLoop(bool idleInGameplay) {
                         // The menu-mode client join: connect at the menu, download the host's save,
                         // load that world (the engine places every prop naturally, with the host's
                         // keys), then net_pump announces world-ready and the host replays; the
-                        // player never sees a divergent fresh world. The fallbacks (no save, a
-                        // failed transfer, a timeout) fresh-boot the baseline and the true-up
-                        // degrades to the heavy reconcile. Blocks the TimelineThread, the abort
-                        // drained inside. A join from inside gameplay connects directly, since it
+                        // player never sees a divergent fresh world. ONE fallback survives: a
+                        // host that genuinely has no save, which is an answer and not a timeout.
+                        // A failed transfer or a world that will not load ends the join by name.
+                        // Blocks the TimelineThread, the abort drained inside. A join from inside gameplay connects directly, since it
                         // has a world.
                         if (pending.role == coop::net::Role::Client && !idleInGameplay) {
                             UE_LOGI("harness: menu-mode client join -- save-transfer bootstrap");
