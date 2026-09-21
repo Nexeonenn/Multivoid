@@ -553,9 +553,9 @@ void Tick(coop::net::Session& session) {
     // worked this pass, which is how the beacon falls silent when the work stops.
     if (isHost) coop::join_beacon::Tick();
 
-    // Outside the world-up gate on purpose: F-121 is a LOAD-TIME ordering question (when the
-    // player's records reach the store against when the bar was last refreshed), and a reader that
-    // only starts once the world is up cannot see either edge. Flag-gated to one load and a branch.
+    // Outside the world-up gate on purpose: the quick-slot bar's icons are decided during the
+    // load, and a reader that only starts once the world is up cannot see that window at all.
+    // Flag-gated to one load and a branch.
     coop::dev::hotbar_icon_probe::Tick();
 
     // The per-tick gameplay subsystem chain (connect-broadcast drains, module polls and applies,

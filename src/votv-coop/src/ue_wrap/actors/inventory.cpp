@@ -109,6 +109,63 @@ void BuildAndSwapArray(void* base, int32_t off, int32_t stride,
     }
 }
 
+// The player's contents array, addressed ONLY through the assertions that prove it is the
+// personal store: the container component, its `Player` flag, and its running Index against the
+// baked slot. Returns the slot index and fills `contents`, or -1 having read nothing.
+//
+// Both readers go through it. The count reader used to address GObjStack[0] directly, which is
+// the same slot on every build measured -- but "the same slot in practice" is what an address
+// assertion exists to stop a reader from relying on, and the count is what the quick-slot edge
+// makes its decision on.
+int32_t ValidatedPersonalSlot(SR::Arr& contents) {
+    void* save = ResolveSaveSlot();   // also refreshes g_gm (and revalidates it via IsLive)
+    if (!save || !g_gm.Raw()) return -1;
+
+    if (CachedOffset(g_offPlayerContainer, R::ClassOf(g_gm.Raw()), L"playerContainer") < 0) return -1;
+    void* pc = ReadAt<void*>(g_gm.Raw(), g_offPlayerContainer);
+    if (!pc || !SR::PlausibleObjPtr(pc) || !R::IsLive(pc)) return -1;
+
+    if (CachedOffset(g_offContainerPropInv, R::ClassOf(pc), L"propInventory") < 0) return -1;
+    void* inv = ReadAt<void*>(pc, g_offContainerPropInv);
+    if (!inv || !SR::PlausibleObjPtr(inv) || !R::IsLive(inv)) return -1;
+
+    // ADDRESS ASSERTION (fail-closed): this must be the PERSONAL store and nothing else. Same flag
+    // that container_contents_sync's BOUNDARY 1 refuses on -- opposite sides of one boundary.
+    if (CachedOffset(g_offInvPlayer, R::ClassOf(inv), L"Player") < 0) return -1;
+    if (ReadAt<uint8_t>(inv, g_offInvPlayer) == 0) {
+        static bool s_warned = false;
+        if (!s_warned) {
+            s_warned = true;
+            UE_LOGW("inventory: playerContainer.propInventory is NOT flagged personal (Player==0) "
+                    "-- refusing to read it as the live personal store. Expected player=True from "
+                    "the class's component template; something resolved to the wrong container.");
+        }
+        return -1;
+    }
+
+    if (CachedOffset(g_offInvIndex, R::ClassOf(inv), L"Index") < 0) return -1;
+    const int32_t idx = ReadAt<int32_t>(inv, g_offInvIndex);
+    if (idx < 0) return -1;  // -1 = never initialised
+    if (idx != kPersonalSlot) {
+        // The join apply wrote kPersonalSlot before this component existed. A different running
+        // index means the apply and the game disagree about where the player's items live.
+        static bool s_warned = false;
+        if (!s_warned) {
+            s_warned = true;
+            UE_LOGE("inventory: the player container runs on GObjStack[%d], not the baked slot %d "
+                    "-- the join apply addressed the wrong slot", idx, kPersonalSlot);
+        }
+    }
+
+    if (CachedOffset(g_offGObjStack, R::ClassOf(save), L"GObjStack") < 0) return -1;
+    const SR::Arr stack = SR::ReadArr(save, g_offGObjStack);
+    if (idx >= stack.num) return -1;
+
+    // The struct_mObject element's single field is the contents TArray<Fstruct_save> at +0.
+    contents = SR::ReadArr(stack.data + static_cast<size_t>(idx) * SR::kMxStride, 0);
+    return idx;
+}
+
 }  // namespace
 
 void* ResolveSaveSlot() {
@@ -147,62 +204,17 @@ bool ReadAll(PlayerInventory& out) {
 }
 
 int32_t LivePersonalStoreCount() {
-    void* save = ResolveSaveSlot();
-    if (!save) return -1;
-    const uint8_t* slot = PersonalSlotOf(save);
-    if (!slot) return -1;
-    return SR::ReadArr(slot, 0).num;
+    SR::Arr contents{};
+    return ValidatedPersonalSlot(contents) < 0 ? -1 : contents.num;
 }
 
 bool ReadLivePersonalStore(LivePersonalStore& out) {
     out.slotIndex = -1;
     out.records.clear();
+    SR::Arr contents{};
+    const int32_t idx = ValidatedPersonalSlot(contents);
+    if (idx < 0) return false;
 
-    void* save = ResolveSaveSlot();   // also refreshes g_gm (and revalidates it via IsLive)
-    if (!save || !g_gm.Raw()) return false;
-
-    if (CachedOffset(g_offPlayerContainer, R::ClassOf(g_gm.Raw()), L"playerContainer") < 0) return false;
-    void* pc = ReadAt<void*>(g_gm.Raw(), g_offPlayerContainer);
-    if (!pc || !SR::PlausibleObjPtr(pc) || !R::IsLive(pc)) return false;
-
-    if (CachedOffset(g_offContainerPropInv, R::ClassOf(pc), L"propInventory") < 0) return false;
-    void* inv = ReadAt<void*>(pc, g_offContainerPropInv);
-    if (!inv || !SR::PlausibleObjPtr(inv) || !R::IsLive(inv)) return false;
-
-    // ADDRESS ASSERTION (fail-closed): this must be the PERSONAL store and nothing else. Same flag
-    // that container_contents_sync's BOUNDARY 1 refuses on -- opposite sides of one boundary.
-    if (CachedOffset(g_offInvPlayer, R::ClassOf(inv), L"Player") < 0) return false;
-    if (ReadAt<uint8_t>(inv, g_offInvPlayer) == 0) {
-        static bool s_warned = false;
-        if (!s_warned) {
-            s_warned = true;
-            UE_LOGW("inventory: playerContainer.propInventory is NOT flagged personal (Player==0) "
-                    "-- refusing to read it as the live personal store. Expected player=True from "
-                    "the class's component template; something resolved to the wrong container.");
-        }
-        return false;
-    }
-
-    if (CachedOffset(g_offInvIndex, R::ClassOf(inv), L"Index") < 0) return false;
-    const int32_t idx = ReadAt<int32_t>(inv, g_offInvIndex);
-    if (idx < 0) return false;  // -1 = never initialised
-    if (idx != kPersonalSlot) {
-        // The join apply wrote kPersonalSlot before this component existed. A different running
-        // index means the apply and the game disagree about where the player's items live.
-        static bool s_warned = false;
-        if (!s_warned) {
-            s_warned = true;
-            UE_LOGE("inventory: the player container runs on GObjStack[%d], not the baked slot %d "
-                    "-- the join apply addressed the wrong slot", idx, kPersonalSlot);
-        }
-    }
-
-    if (CachedOffset(g_offGObjStack, R::ClassOf(save), L"GObjStack") < 0) return false;
-    const SR::Arr stack = SR::ReadArr(save, g_offGObjStack);
-    if (idx >= stack.num) return false;
-
-    // The struct_mObject element's single field is the contents TArray<Fstruct_save> at +0.
-    const SR::Arr contents = SR::ReadArr(stack.data + static_cast<size_t>(idx) * SR::kMxStride, 0);
     out.slotIndex = idx;
     out.records.reserve(static_cast<size_t>(contents.num));
     for (int32_t i = 0; i < contents.num; ++i) {

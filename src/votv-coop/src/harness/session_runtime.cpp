@@ -9,10 +9,12 @@
 #include "coop/creatures/npc_sync.h"
 #include "coop/dev/dev_gate.h"
 #include "coop/dev/force_weather.h"
+#include "coop/dev/hotbar_icon_probe.h"
 #include "coop/dev/object_overlay.h"
 #include "coop/dev/ragdoll_bone_overlay.h"
 #include "coop/dev/restore_vitals.h"
 #include "coop/dispatch/event_feed.h"
+#include "coop/items/hotbar_icon_edge.h"
 #include "coop/items/player_inventory_sync.h"
 #include "coop/moderation/ban_list.h"
 #include "coop/moderation/moderation.h"
@@ -62,7 +64,6 @@
 #include "ue_wrap/core/log.h"
 #include "ue_wrap/core/reflection.h"
 #include "ue_wrap/core/sdk_profile.h"
-#include "ue_wrap/hotbar/icons.h"   // F-121: the quick-slot icon edge, session or not
 
 #include <windows.h>
 #define PSAPI_VERSION 2      // K32GetProcessMemoryInfo from kernel32 -- no psapi.lib link
@@ -751,8 +752,10 @@ void RunPlayLoop(bool idleInGameplay) {
                     // publishes its icon tables after its own post-load refresh whether or not
                     // anyone is connected, so a solo world loses the race exactly as a hosted one
                     // does. It rides the session tick when there is a session and this one when
-                    // there is not; it latches per world either way.
-                    ue_wrap::hotbar::Tick();
+                    // there is not; it latches per world either way. The readout rides with it,
+                    // so the path that has no session is also the path that can be measured.
+                    coop::hotbar_icon_edge::Tick();
+                    coop::dev::hotbar_icon_probe::Tick();
                 }
             }
             // The roster needs a live world and player; skipped at the menu.

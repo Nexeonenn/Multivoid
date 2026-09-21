@@ -3,10 +3,10 @@
 #include "ue_wrap/hotbar/icons.h"
 
 #include "ue_wrap/actors/inventory.h"
+#include "ue_wrap/actors/save_record.h"
 #include "ue_wrap/actors/sleep.h"   // the shared live-mainGamemode accessor
 #include "ue_wrap/core/cached_obj_ref.h"
 #include "ue_wrap/core/call.h"
-#include "ue_wrap/core/field_io.h"
 #include "ue_wrap/core/log.h"
 #include "ue_wrap/core/reflection.h"
 #include "ue_wrap/core/sdk_profile.h"
@@ -18,8 +18,8 @@ namespace {
 
 namespace R   = ue_wrap::reflection;
 namespace P   = ue_wrap::profile;
-namespace FIO = ue_wrap::field_io;
 namespace INV = ue_wrap::inventory;
+namespace SR  = ue_wrap::save_record;
 
 constexpr const wchar_t* kUiClass    = L"ui_UI_C";
 constexpr const wchar_t* kPropProc   = L"propProcessor_C";
@@ -27,10 +27,6 @@ constexpr const wchar_t* kGameInst   = L"mainGameInstance_C";
 constexpr const wchar_t* kMatInst    = L"MaterialInstance";   // owns TextureParameterValues
 constexpr const wchar_t* kTexParam   = L"tex";                // the parameter updateSlotInv writes
 constexpr const wchar_t* kRefreshFn  = L"updateSlotInv";
-
-// The edge is checked a few times a second until it fires, then never again for that world. The
-// read is a handful of pointer chases and TArray headers, and it stops entirely once latched.
-constexpr int kPollTicks = 15;   // ~8 Hz at ~120 Hz
 
 struct Offsets {
     bool    ok              = false;
@@ -121,17 +117,13 @@ bool Resolve() {
     return true;
 }
 
-FIO::TArrayView ArrayAt(const void* base, int32_t off) {
-    FIO::TArrayView v{nullptr, 0, 0};
-    if (!base || off < 0) return v;
-    const uint8_t* p = static_cast<const uint8_t*>(base) + off;
-    v.data = *reinterpret_cast<uint8_t* const*>(p);
-    v.num  = *reinterpret_cast<const int32_t*>(p + 8);
-    v.max  = *reinterpret_cast<const int32_t*>(p + 12);
-    // A TArray caught mid-realloc, or an uninitialised slot, must read as empty rather than send
-    // the walk below into arbitrary memory.
-    if (!v.data || v.num < 0 || v.num > 4096) { v.data = nullptr; v.num = 0; }
-    return v;
+// The layer's own bounded TArray read, not a second one: save_record::ReadArr already rejects a
+// negative or absurd count AND checks the data pointer is plausible, which a hand-rolled header
+// read here did not. A TArray caught mid-realloc reads as empty rather than sending the walks
+// below into arbitrary memory.
+SR::Arr ArrayAt(const void* base, int32_t off) {
+    if (!base || off < 0) return SR::Arr{};
+    return SR::ReadArr(base, off);
 }
 
 }  // namespace
@@ -169,7 +161,7 @@ bool Read(State& out) {
 
 std::wstring SlotTexture(const State& s, int i) {
     if (!g_off.ok || !s.ui || i < 0 || i >= s.slots || !R::IsLive(s.ui)) return std::wstring();
-    const FIO::TArrayView slots = ArrayAt(s.ui, g_off.slotInv);
+    const SR::Arr slots = ArrayAt(s.ui, g_off.slotInv);
     if (i >= slots.num) return std::wstring();
     void* img = reinterpret_cast<void* const*>(slots.data)[i];
     if (!img || !R::IsLive(img)) return std::wstring();
@@ -184,7 +176,7 @@ std::wstring SlotTexture(const State& s, int i) {
         if (c == g_matInstClass) { isMat = true; break; }
     if (!isMat) return L"no-material";
 
-    const FIO::TArrayView params = ArrayAt(res, g_off.texParams);
+    const SR::Arr params = ArrayAt(res, g_off.texParams);
     for (int j = 0; j < params.num; ++j) {
         const uint8_t* e = params.data + static_cast<size_t>(j) * g_off.texParamStride;
         const R::FName& pn = *reinterpret_cast<const R::FName*>(e + g_off.texParamInfo);
@@ -195,54 +187,10 @@ std::wstring SlotTexture(const State& s, int i) {
     return L"no-parameter";
 }
 
-bool BuiltWithoutIcons(const State& s) {
-    if (!s.IconsReady() || s.carried <= 0 || s.slots <= 0) return false;
-    // updateSlotInv fills from the END of the item list down to slot 0, so slot 0 carries an icon
-    // whenever the bar lists anything at all -- it is the one slot a correct rebuild always
-    // reaches, and the one whose emptiness therefore means the rebuild found no icons.
-    const std::wstring tex = SlotTexture(s, 0);
-    return tex == L"Black" || tex == L"null" || tex == L"no-parameter" || tex == L"no-material";
-}
-
 bool Rebuild(const State& s) {
     if (!g_off.ok || !g_refreshFn || !s.ui || !R::IsLive(s.ui)) return false;
     ue_wrap::ParamFrame f(g_refreshFn);
     return f.valid() && ue_wrap::Call(s.ui, f);
-}
-
-void Tick() {
-    static int s_ticks = 0;
-    if (++s_ticks < kPollTicks) return;
-    s_ticks = 0;
-
-    // Latched per WORLD, on the renderer instance: it is spawned with the world, so a new world
-    // brings a new pointer and the edge arms itself again without a level-load callback.
-    static void* s_firedFor = nullptr;
-
-    // The latch is tested on two pointer reads, BEFORE the full state read. An edge that fires
-    // once per world must cost nothing for the rest of that world, and the first cut of this
-    // function read everything first and tested afterwards -- which is how it went on paying
-    // 1 ms a tick for work whose answer could not change.
-    if (!Resolve()) return;
-    void* gm = ue_wrap::sleep::Gamemode();
-    if (!gm) return;
-    void* renderer = *reinterpret_cast<void* const*>(static_cast<uint8_t*>(gm) + g_off.propRenderer);
-    if (!renderer || renderer == s_firedFor) return;
-
-    State s;
-    if (!Read(s)) return;
-    if (!s.renderer || s.renderer == s_firedFor) return;
-    if (!BuiltWithoutIcons(s)) return;
-
-    s_firedFor = s.renderer;
-    const std::wstring before = SlotTexture(s, 0);
-    const bool ok = Rebuild(s);
-    State after;
-    Read(after);
-    UE_LOGI("hotbar: the icon tables arrived after the bar was built (names=%d texs=%d phases=%d "
-            "carried=%d) -- rebuilt through updateSlotInv: called=%d, slot0 %ls -> %ls",
-            s.iconNames, s.iconTextures, s.rendererPhases, s.carried, ok ? 1 : 0, before.c_str(),
-            SlotTexture(after, 0).c_str());
 }
 
 }  // namespace ue_wrap::hotbar

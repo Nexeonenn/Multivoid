@@ -61,12 +61,14 @@ std::string Summary(const HB::State& s) {
 
 // ---- the refresh verb's own dispatches ---------------------------------------------------------
 //
-// A world load runs inside ONE enormous game-thread dispatch (docs/coop-dispatch-visibility.md,
-// the pump rule: seconds with no drain), so no tick of ours -- world-up-gated or not -- gets a
-// sample while the game is loading, and the first cut of this probe proved it by landing its
-// earliest sample 12 s after the save was loaded with the bar already broken. The one seam that
-// fires INSIDE that body is the VM's own script loop. `updateSlotInv` is a Blueprint-to-Blueprint
-// call (mainGamemode -> ui_UI), i.e. EX_Context plus a virtual call, which ProcessEvent never sees.
+// A world load ends in one long game-thread body, and the pump does not drain while it runs
+// (docs/coop-dispatch-visibility.md, the pump rule, which measures its tail at 5.6 to 6.8 s on a
+// joining client). So no tick of ours -- world-up-gated or not -- reliably gets a sample while the
+// game is loading, and the first cut of this probe proved it by landing its earliest sample well
+// after the save was loaded, with the bar already broken. The seam that fires INSIDE that body is
+// the VM's own script loop. `updateSlotInv` is called from ten Blueprint sites -- the game mode,
+// the player and the inventory screen -- and every one of them is a Blueprint-to-Blueprint call
+// that ProcessEvent never sees; the watch is by NAME, so it catches all ten.
 int g_calls = 0;
 
 sg::Verdict OnRefreshPre(const sg::Call& c) {
