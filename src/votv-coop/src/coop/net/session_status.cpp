@@ -331,7 +331,7 @@ int Session::pendingPeerCount() const {
 // a host the seat is spent in AdmitPending, long after the Connected callback, and a copy left in
 // that callback once admitted a peer without ever sending AssignPeerSlot.
 void Session::FinishPeerConnected(int slot, uint32_t hConn) {
-    TuneConnection(hConn, rateControl_.Enabled());
+    TuneConnection(hConn, rateControl_.Enabled(), rateControl_.PinnedRateKbs());
     // Mirror the buffer size the connection runs with (the knob or the default); the headroom
     // rule every reliable send path obeys is measured against it.
     {

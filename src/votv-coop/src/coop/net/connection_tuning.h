@@ -30,6 +30,11 @@ inline constexpr int kDefaultSendBufBytes = 4 * 1024 * 1024;
 // ini is resolved live on every read, so a flag flipped after Session::Start would otherwise give
 // the one combination that is wrong in both directions: this function writing an opening rung that
 // the controller -- disabled at Start -- will never move again.
-void TuneConnection(uint32_t hConn, bool rateControlled);
+// `pinnedRateKbs` is the drill's fixed-rate override, 0 for none. It is PASSED rather than
+// resolved here because the session already resolved it once, at Start, to decide whether the
+// controller runs at all -- and `ResolveInt` re-reads the ini on every call. Resolving it a second
+// time per connection let an ini edited mid-session pin one connection while the controller was
+// still steering it: two writers of one rate, out of one knob read twice.
+void TuneConnection(uint32_t hConn, bool rateControlled, long pinnedRateKbs);
 
 }  // namespace coop::net

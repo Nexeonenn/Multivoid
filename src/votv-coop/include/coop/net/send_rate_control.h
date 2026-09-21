@@ -159,10 +159,17 @@ public:
     // Session::Start: a new session measures from zero. Called before the net thread exists.
     // `controlEnabled` false leaves every link at whatever the transport was configured with, and
     // the measurements still run: that is the A1 behaviour, kept as the before-picture.
-    void Reset(bool controlEnabled);
+    // `pinnedKbs` is the drill's fixed-rate override in KB/s, 0 for none. It is kept HERE rather
+    // than on the Session because this class already owns the question it answers -- whether this
+    // session's links are steered, pinned, or left alone -- and because `ResolveInt` re-reads the
+    // ini on every call, so resolving it a second time per connection let an ini edited
+    // mid-session pin a link the controller was still steering. One read, at Start, one owner.
+    void Reset(bool controlEnabled, long pinnedKbs);
     // Whether this session's links are paced by the law. The session's own resolved answer, so a
     // connection being tuned asks THIS rather than re-reading an ini that resolves live.
     bool Enabled() const { return controlEnabled_; }
+    // The drill's fixed-rate override as resolved once at Start; 0 when none.
+    long PinnedRateKbs() const { return pinnedKbs_; }
     // Slot teardown. GNS's pending counters restart with the next connection, so ours must too, or
     // the next occupant of the slot inherits a byte debt the identity below would read as delivery.
     // Any thread -- a host-side kick runs on the game thread -- so it ARMS only, and the net thread
@@ -325,6 +332,10 @@ private:
     static int RttMinFor_(const Measured& m, uint64_t nowMs);
     // Retire outstanding probes older than kProbeLostMs, counting them lost.
     static void ExpireOutstanding_(Measured& m, uint64_t nowMs);
+    // The anchor's bound: the largest raw `served` reading in the window. Separate from the EWMA
+    // because they answer different questions AND because they reach zero at different times --
+    // the guard in `Steer_` has to test this one, since this is what the anchor divides by.
+    static int64_t ServedPeak_(const Measured& m);
     // Start a fresh 1 Hz reporting window at `nowMs`.
     static void OpenWindow_(Measured& m, uint64_t nowMs, int64_t delivered, uint64_t recv);
 
@@ -336,6 +347,7 @@ private:
     Slot slots_[kSlots];
     // Whether the law's decisions are handed to the transport at all.
     bool controlEnabled_ = false;
+    long pinnedKbs_ = 0;
 
     // The sample-cost accounting, session-wide (the reads are one pass over every live slot).
     uint64_t costUs_ = 0;

@@ -15,7 +15,7 @@
 
 namespace coop::net {
 
-void TuneConnection(uint32_t hConn, bool rateControlled) {
+void TuneConnection(uint32_t hConn, bool rateControlled, long pinnedRateKbs) {
     const auto h = static_cast<HSteamNetConnection>(hConn);
 
     // The lanes. On failure reliable sends collapse to lane 0 -- functional, no priority routing.
@@ -50,21 +50,21 @@ void TuneConnection(uint32_t hConn, bool rateControlled) {
     // The rate the connection opens at. SendRateMin and Max are written to one value, which is the
     // GNS header's own way of saying the application owns this rate. The drill's pin wins outright;
     // otherwise the measured-rate controller's opening rate, written HERE rather than at its first
-    // decision, because between the connect and that decision the link would otherwise run at the
-    // transport's ping-derived guess -- which on a thin uplink is the overdrive that controller
-    // exists to end, and the admission exchange that runs before a slot exists is inside exactly
-    // that window.
+    // decision, because the admission exchange that runs before a slot exists is inside that
+    // window. What the window holds is now GNS's own stock flat 256 KB/s, not its ping-derived
+    // guess: with no global pin, `SendRateMin == SendRateMax` and `SNP_ClampSendRate` takes the
+    // "application has disabled bandwidth estimation" branch (`snp.cpp:4249-4255`), so
+    // `m_nCurrentSendRateEstimate` is never consulted. 1.77x our opening rate, and flat.
     //
     // With both off nothing is written and the link runs at GNS's stock 256 KB/s, fixed. That is
     // the control arm of an experiment and not a shipped path: there is no global pin behind this
     // any more, so these are the only two writers of an opening rate in the process.
-    const long rateKbs = coop::config::ResolveInt(coop::config_registry::rows::net_sendrate_kbs);
-    if (rateKbs > 0) {
-        const int32 pinned = static_cast<int32>(rateKbs) * 1024;
+    if (pinnedRateKbs > 0) {
+        const int32 pinned = static_cast<int32>(pinnedRateKbs) * 1024;
         utils->SetConnectionConfigValueInt32(h, k_ESteamNetworkingConfig_SendRateMin, pinned);
         utils->SetConnectionConfigValueInt32(h, k_ESteamNetworkingConfig_SendRateMax, pinned);
         UE_LOGW("net: send rate PINNED to %ld KB/s for h=0x%08x (drill knob net.sendrate_kbs)",
-                rateKbs, static_cast<unsigned>(hConn));
+                pinnedRateKbs, static_cast<unsigned>(hConn));
     } else if (rateControlled) {
         const int32 open = static_cast<int32>(SendRateControl::StartRateBps());
         utils->SetConnectionConfigValueInt32(h, k_ESteamNetworkingConfig_SendRateMin, open);

@@ -6,8 +6,9 @@
 
 namespace coop::net {
 
-void SendRateControl::Reset(bool controlEnabled) {
+void SendRateControl::Reset(bool controlEnabled, long pinnedKbs) {
     controlEnabled_ = controlEnabled;
+    pinnedKbs_ = pinnedKbs;
     // Session::Start, with no net thread yet: the reset is performed here rather than armed, so a
     // session that never connects leaves nothing behind either.
     for (int i = 0; i < kSlots; ++i) {
@@ -122,6 +123,14 @@ void SendRateControl::OpenWindow_(Measured& m, uint64_t nowMs, int64_t delivered
     m.rateWrites = 0;
 }
 
+int64_t SendRateControl::ServedPeak_(const Measured& m) {
+    int64_t peak = 0;
+    for (int64_t v : m.servedRing) {
+        if (v > peak) peak = v;
+    }
+    return peak;
+}
+
 void SendRateControl::Steer_(Measured& m) {
     // THE LAW. Every term below is a byte count or a ratio of two byte counts; nothing here is
     // compared against a reference derived from its own past, which is the single property both
@@ -141,7 +150,20 @@ void SendRateControl::Steer_(Measured& m) {
     // the wire reads `unacked == 0` -> `inflightMs == 0` -> the CLIMB branch. Every guard below is
     // then a multiple of zero, so the rate climbed 1.25x per 100 ms to the ceiling unopposed and the
     // next burst opened there -- root A rebuilt by the controller that exists to end it.
-    if (m.servedSamples < kServedWarmupSamples || m.servedBps <= 0) { ++m.holdCount; return; }
+    //
+    // BOTH estimates are tested, and that is the whole point: the EWMA and the anchor's windowed
+    // maximum do not reach zero together. The ring is 4 samples, so it empties after 400 ms of
+    // silence; the EWMA sheds a quarter of itself per sample and needs about 4 s to reach 0 from a
+    // quarter-megabyte. An audit found the ~3.6 s gap between them reachable and load-bearing: the
+    // guard used to test the EWMA alone while the anchor below divides by the ring, so a link that
+    // had delivered nothing for 400 ms with work still queued passed the guard, met an anchor whose
+    // peak was 0, and was clamped to kFloorBps -- the same defect this comment describes, mirrored,
+    // in the branch that ships by default. A zero from EITHER means "not measured", and holds.
+    const int64_t peak = ServedPeak_(m);
+    if (m.servedSamples < kServedWarmupSamples || m.servedBps <= 0 || peak <= 0) {
+        ++m.holdCount;
+        return;
+    }
 
     // Little's law, read backwards: the bytes the transport has on the wire and unacknowledged,
     // divided by the rate those bytes are being acknowledged at, is the time the wire is standing
@@ -169,18 +191,13 @@ void SendRateControl::Steer_(Measured& m) {
     // THE ANCHOR, applied unconditionally to every decision including the ones that changed nothing.
     // A rate may not stand above a small multiple of what the link is actually carrying, whatever
     // the delay term says -- and on the archived run the delay term said "accelerate" for 180 of 210
-    // seconds while this bound was 442x away. It is deliberately the last word, and it carries no
-    // guard of its own: the peak is positive by the time any decision reaches here, because the
-    // hold above is what a zero means.
+    // seconds while this bound was 442x away. It is deliberately the last word, and it needs no
+    // guard of its own because the hold above tests THIS peak, not merely the EWMA.
     //
     // It reads the windowed MAXIMUM, never the EWMA -- see kServedPeakSamples. A climbing link
     // delivers exactly what it is paced at, so an average that lags the climb reports a link half
     // as capable as it just proved itself to be, and the anchor would brake a link that is not
     // failing.
-    int64_t peak = 0;
-    for (int64_t v : m.servedRing) {
-        if (v > peak) peak = v;
-    }
     const int64_t cap = peak * kOverdriveNum / kOverdriveDen;
     if (m.rateBps > cap) {
         m.rateBps = cap;

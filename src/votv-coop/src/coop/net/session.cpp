@@ -281,11 +281,13 @@ void Session::SampleLinkRates(uint64_t nowMs) {
         in.gnsPingMs           = st.m_nPing;
         in.backlogBytes        = backlog_.DepthBytes(i);
         rateControl_.Sample(i, in, nowMs);
-        // What the law decided, handed to the transport. Per CONNECTION, not globally: the
-        // controller has to be able to converge BELOW the global 1 MiB/s floor, which is still in
-        // place until WP-A3 removes it, and a connection value outranks a global one. Writing both
-        // Min and Max to one number is the API's own way of saying "the application owns this
-        // rate"; GNS re-reads the config on every send and think, so it lands within a packet.
+        // What the law decided, handed to the transport. Per CONNECTION, because a connection is
+        // what has a capacity -- and because nothing global sets a rate any more, this and
+        // `connection_tuning`'s opening write are the only two rate writers in the process
+        // (`coop/net/session_start` deleted the 1 MiB/s floor this comment used to have to converge
+        // below). Writing both Min and Max to one number is the API's own way of saying "the
+        // application owns this rate"; GNS re-reads the config on every send and think, so it
+        // lands within a packet.
         // The decision is PEEKED and only spent once both writes have gone in: a decision retired
         // by a write that never happened would strand this link at a stale rate for as long as the
         // law's dead band held the decision still.
