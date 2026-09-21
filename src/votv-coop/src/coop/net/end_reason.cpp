@@ -25,7 +25,7 @@ constexpr Row kRows[] = {
     {EndReason::BadAddress,          {"MV-J02", "The server list gave a bad address for this host."}},
     {EndReason::JoinError,           {"MV-J03", "The join failed before it started. The log has the error."}},
     {EndReason::CouldNotStart,       {"MV-J04", "Could not start the connection."}},
-    {EndReason::JoinTimedOut,        {"MV-J05", "The join did not finish in time."}},
+    {EndReason::RetiredJoinTimedOut, {"MV-J05", "(retired)"}},
     {EndReason::ShuttingDown,        {"MV-J06", "The game is shutting down."}},
     {EndReason::GameVersionMismatch, {"MV-J07", "The host plays a different version of the game."}},
     {EndReason::HostNewer,           {"MV-J08", "The host runs a newer build of the mod. Update to join."}},
@@ -44,6 +44,9 @@ constexpr Row kRows[] = {
     {EndReason::HostWorldNotPrepared,  {"MV-J21", "The host never finished preparing its world for you."}},
     {EndReason::WorldDownloadStalled,  {"MV-J22", "The download of the host's world stopped part way through."}},
     {EndReason::HostWorldNotSent,      {"MV-J23", "The host never sent you the world it owed."}},
+    {EndReason::WorldWouldNotLoad,     {"MV-J24", "The host's world would not load on this machine."}},
+    {EndReason::WorldUnusable,         {"MV-J25", "The host's world arrived damaged and could not be used."}},
+    {EndReason::ProfileNotSent,        {"MV-J26", "The host never sent your inventory."}},
     // H -- the host decided
     {EndReason::WrongPassword,           {"MV-H01", "Wrong password."}},
     {EndReason::PasswordRequired,        {"MV-H02", "This server needs a password."}},

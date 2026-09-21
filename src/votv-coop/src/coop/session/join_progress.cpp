@@ -63,11 +63,6 @@ Notice     g_notice;  // guarded by g_noticeMu; code != None == a modal is pendi
 // mutex; only the render's actual read does. Kept in sync inside the mutex's critical sections.
 std::atomic<bool> g_noticePending{false};
 
-// A generous failsafe: a save-transfer join legitimately spends the cover on a multi-megabyte
-// save download (tens of seconds over WAN), the full world load and the true-up bracket. The
-// harness's join drive owns the real transfer timeout; this longer cap fires only if that
-// path wedged (a trapped cover is worse than revealing the game).
-constexpr int64_t kMaxJoinMs = 240'000;
 // The host-boot failsafe backstop. The harness's host-boot drive normally resets this on
 // session start or its own timeout; this longer cap fires only if that path never ran (a
 // stuck cover at the menu is worse than dropping it). Host mode just resets: no Fail, since
@@ -495,21 +490,27 @@ View Snapshot() {
 
 void MaybeTimeout() {
     if (!Active()) return;
-    const int64_t start = g_startMs.load(std::memory_order_relaxed);
-    if (start == 0) return;
     // A host boot: the harness owns the lifecycle (a reset on session start or its own timeout).
     // This is only a last-resort backstop so a wedged host boot cannot trap the cover forever:
-    // just drop it (no Fail, there is no client session to stop).
+    // just drop it (no Fail, there is no client session to stop). g_startMs is read HERE and
+    // nowhere else now -- the client's waits are measured from their own phase's token, so a
+    // whole-attempt stopwatch would be a number no client-side rule consults.
     if (static_cast<Mode>(g_mode.load(std::memory_order_relaxed)) == Mode::Host) {
-        if (NowMs() - start > kMaxHostBootMs) {
+        const int64_t start = g_startMs.load(std::memory_order_relaxed);
+        if (start != 0 && NowMs() - start > kMaxHostBootMs) {
             UE_LOGW("join_progress: host-boot cover exceeded %llds -- dropping it (failsafe)",
                     static_cast<long long>(kMaxHostBootMs / 1000));
             Reset();
         }
         return;
     }
-    // The phase watchdog, ahead of the failsafe because it is the one that can say WHAT stopped.
-    // Fail is idempotent and first-notice-wins, so whichever fires first owns the dialog.
+    // THE PHASE WATCHDOG IS THE ONLY CLIENT-SIDE JOIN WATCHDOG. There is no whole-join failsafe
+    // behind it any more: a join ends when a phase's token stops or when the transport dies, never
+    // because the sum of legitimate phase durations crossed a number. The one it replaced spanned
+    // the dial, the host's live capture, the download, the engine world load and the bracket --
+    // phases whose honest durations are independent and additive -- so all it could report was
+    // that the sum ran long, in a sentence that guessed at its own cause. Fail is idempotent and
+    // first-notice-wins, so whichever phase fires owns the dialog.
     const Phase ph = PhaseOf();
     const PhaseWatch w = WatchFor(ph, static_cast<Stage>(g_stage.load(std::memory_order_relaxed)));
     const int64_t token = g_tokenMs.load(std::memory_order_relaxed);
@@ -539,13 +540,6 @@ void MaybeTimeout() {
         }
         Fail(w.code, detail);
         return;
-    }
-    if (NowMs() - start > kMaxJoinMs) {
-        // Fail, not a bare Reset: Reset hides the cover but never tells the harness to stop the
-        // session, so a stuck or zombie net session keeps the pump running the full gameplay tick
-        // at the menu, the RAM balloon. Fail sets the abort the harness drains (stop and reopen the
-        // browser), which actually ends the pump.
-        Fail(EndReason::JoinTimedOut, "lost SnapshotComplete or a stalled drain");
     }
 }
 

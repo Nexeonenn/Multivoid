@@ -232,6 +232,13 @@ CFG_INT(hold_snapshot_sec, "hold_snapshot_sec", "dev", 0, 0, 600,
     "(0 = off). Reproduces the one host-side wait nothing else can stage -- a joiner with a "
     "healthy link and a world, waiting on a bracket the host is holding. Under the joiner's "
     "budget the join still completes; over it, it fails naming the host's phase.")
+CFG_INT(stall_world_stream_at_pct, "stall_world_stream_at_pct", "dev", 0, 0, 99,
+    "VOTVCOOP_DEV_STALL_WORLD_STREAM_AT_PCT",
+    "Host testing knob: stop feeding a joiner's world blob once N% of it has been handed to the "
+    "transport (0 = off). The connection stays healthy and the host keeps beaconing its phase, "
+    "so this is a download that STOPS rather than a link that dies -- the shape a fixed transfer "
+    "cap used to answer by booting a fresh world and finishing the join in it. The joiner's "
+    "download budget now names it instead.")
 CFG_FLAG(window_log, "window_log", "dev", false, nullptr,
     "Diagnostic logging for window sync.")
 CFG_FLAG(window_synth, "window_synth", "dev", false, nullptr,

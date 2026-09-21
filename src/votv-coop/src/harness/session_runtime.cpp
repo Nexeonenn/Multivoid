@@ -53,6 +53,7 @@
 #include "ui/host_session_settings.h"   // it paints a failed host's reason on itself
 #include "ui/host_window_native.h"      // ...and so does step one
 #include "ui/server_browser.h"
+#include "coop/net/end_reason.h"  // the named reason a join that reached the world load ends on
 #include "ui/server_browser_surface.h"  // WHICH browser this session uses
 #include "ue_wrap/engine/engine.h"
 #include "ue_wrap/engine/save_browser.h"
@@ -229,7 +230,10 @@ bool BootStorySaveBlocking(bool forceFresh, const wchar_t* slotOverride,
                                           : ue_wrap::engine::LoadStorySave(slot.c_str(), forceGameMode);
             st->store(inGame ? 2 : 1);
         });
-        while (st->load() == 0) ::Sleep(5);
+        // Shutdown-aware, like the host-boot twin in DriveHostBootIfPending: a posted task that
+        // the game thread never drains -- which is every moment of a blocking level load -- held
+        // this thread for as long as it lasted, teardown included.
+        while (st->load() == 0 && !coop::shutdown::IsShuttingDown()) ::Sleep(5);
         if (st->load() == 2) {
             // The world this process would serve if it hosts: the slot it loaded, or no slot for
             // a New Game, which has no file yet -- named all the same, because what is kept per
@@ -246,6 +250,20 @@ bool BootStorySaveBlocking(bool forceFresh, const wchar_t* slotOverride,
 
 namespace {
 
+// A join that reached this machine's own world load and could not finish it. Every exit from the
+// boot below either has the host's world or has come through here: the reason is stashed for the
+// modal, the cover comes down, the session stops so the pump is not left running the full gameplay
+// tick at the menu, and the browser reopens. The shape is the abort branch's, deliberately -- the
+// difference between a player cancelling and a world refusing to load is what the dialog says, not
+// what the harness does.
+void FailJoinNoWorld_(coop::net::EndReason code, const char* detail) {
+    coop::join_progress::Fail(code, detail);  // stash the notice and win the abort
+    coop::join_progress::Reset();             // cover down; this drains the abort flag too
+    if (g_session.running() && g_session.role() == coop::net::Role::Client) g_session.Stop();
+    ui::server_browser_surface::Open();
+    ue_wrap::log::Flush();
+}
+
 // The menu-mode join's world boot: wait for the save transfer (the session is already connecting
 // at the menu), then load the downloaded slot; any failure falls back to the fresh-boot baseline,
 // which the true-up handles more heavily. It blocks the TimelineThread, so RunPlayLoop's abort
@@ -253,7 +271,12 @@ namespace {
 // here.
 void DriveMenuModeJoinWorldBoot() {
     namespace ST = coop::save_transfer;
-    const ULONGLONG t0 = ::GetTickCount64();
+    // NO CLOCK ON THIS LOOP. It ends when the transfer reaches a state, when the player cancels,
+    // when the link dies -- or when join_progress's phase watchdog fails the join by name and sets
+    // the abort this loop drains. The 120 s cap that used to sit here answered a transfer that was
+    // merely SLOW by booting a fresh world and finishing the join in it, telling the player
+    // nothing: it declared the host's save "unavailable/failed" while the host was still streaming
+    // it, and the joiner ended up standing in a world that was not the host's.
     bool aborted = false;
     for (;;) {
         const ST::ClientState st = ST::GetClientState();
@@ -262,12 +285,8 @@ void DriveMenuModeJoinWorldBoot() {
             st == ST::ClientState::Failed) break;
         if (coop::shutdown::IsShuttingDown()) return;
         if (coop::join_progress::TakeAbortRequest()) { aborted = true; break; }
-        if (!coop::join_progress::Active()) { aborted = true; break; }  // cover reset (failsafe)
+        if (!coop::join_progress::Active()) { aborted = true; break; }  // the cover came down
         if (!g_session.running()) { aborted = true; break; }            // connect died
-        if (::GetTickCount64() - t0 > 120000) {
-            UE_LOGW("harness: save transfer timed out (120 s) -- falling back to a fresh world");
-            break;
-        }
         // Feed the loading screen the download's real progress, polled here (this loop runs at ~60
         // Hz on the timeline thread for the whole transfer) rather than pushed from the chunk sink,
         // so the net thread gains no per-chunk work. Without it the longest phase of a join, ~17 s
@@ -309,19 +328,25 @@ void DriveMenuModeJoinWorldBoot() {
     // pre-materialise hook has this client's inventory at load time. The host pushes it the moment
     // our guid arrives, so it has almost always landed during the transfer wait; this is the safety
     // barrier.
-    auto waitForApplyBlob = [] {
+    // True to go on with the load. False means the join has ALREADY been failed and torn down.
+    auto waitForApplyBlob = []() -> bool {
         namespace PIS = coop::player_inventory_sync;
-        if (PIS::HasPendingApply()) return;
+        if (PIS::HasPendingApply()) return true;
         const ULONGLONG w0 = ::GetTickCount64();
         while (!PIS::HasPendingApply()) {
-            if (coop::shutdown::IsShuttingDown() || !g_session.running()) return;
-            // A 20 s cap for the degenerate case (the host never sends). On a timeout the load
-            // proceeds; the apply hook then empties the host's items out of the save object and
-            // keeps this session from reporting an inventory back.
+            if (coop::shutdown::IsShuttingDown() || !g_session.running()) return false;
+            // The host sends this the moment the slot's guid arrives and retries every tick on a
+            // refusal, and it always has something to send -- the stored profile, its file, or the
+            // starter kit, never another player's. So a blob that never arrives is a host that is
+            // not doing what it owes, and the bound says so by name. It used to load ANYWAY and let
+            // the apply hook empty the host's items out of the save object: the player walked into
+            // the world with someone else's emptied inventory and was told nothing, and this
+            // session then reported no inventory back.
             if (::GetTickCount64() - w0 > 20000) {
-                UE_LOGW("harness: inventory apply blob did not arrive in 20s -- loading without a "
-                        "profile (the apply hook empties the host's items)");
-                return;
+                FailJoinNoWorld_(coop::net::EndReason::ProfileNotSent,
+                                 "no inventory arrived in 20s, and loading without one would put "
+                                 "you in the world with an emptied inventory");
+                return false;
             }
             PostPumpComposite([] {
                 coop::net_pump::Tick(g_session);
@@ -334,6 +359,7 @@ void DriveMenuModeJoinWorldBoot() {
             ::Sleep(16);
         }
         UE_LOGI("harness: inventory apply blob ready -- proceeding to load the world");
+        return true;
     };
 
     // Arm the world-load episode before the boot that triggers the game's loadObjects pre-delete:
@@ -354,19 +380,31 @@ void DriveMenuModeJoinWorldBoot() {
         auto rst = std::make_shared<std::atomic<int>>(0);
         Post([rst] { ue_wrap::engine::ResetCachedSave(); rst->store(1); });
         while (rst->load() == 0 && !coop::shutdown::IsShuttingDown()) ::Sleep(5);
-        waitForApplyBlob();
+        if (!waitForApplyBlob()) return;
         coop::player_inventory_sync::BeginJoinApply();
         if (!BootStorySaveBlocking(/*forceFresh=*/false, slot.c_str(), mode)) {
-            UE_LOGW("harness: coop-slot load did not reach gameplay -- falling back fresh");
-            coop::player_inventory_sync::BeginJoinApply();
-            BootStorySaveBlocking(/*forceFresh=*/true);
+            // NOT a fresh boot. The world we were given is the world this join is about, and an
+            // engine that will not load it has ended the join, not changed its subject.
+            FailJoinNoWorld_(coop::net::EndReason::WorldWouldNotLoad,
+                             "the engine did not reach gameplay with the world the host sent");
         }
-    } else {
-        UE_LOGI("harness: host save unavailable/failed -- fresh-booting the ephemeral baseline");
-        waitForApplyBlob();
-        coop::player_inventory_sync::BeginJoinApply();
-        BootStorySaveBlocking(/*forceFresh=*/true);
+        return;
     }
+    if (ST::GetClientState() == ST::ClientState::NoSaveAvailable) {
+        // The one legitimate fresh boot: the host HAS no save, said so, and a blank world is the
+        // correct answer rather than a substitute for one. (ArmBeginNoSave_ sends this on purpose.)
+        UE_LOGI("harness: the host has no save -- fresh-booting the ephemeral baseline, as asked");
+        if (!waitForApplyBlob()) return;
+        coop::player_inventory_sync::BeginJoinApply();
+        if (!BootStorySaveBlocking(/*forceFresh=*/true))
+            FailJoinNoWorld_(coop::net::EndReason::WorldWouldNotLoad,
+                             "the engine did not reach gameplay with a fresh world");
+        return;
+    }
+    // ClientState::Failed: the blob arrived damaged (a CRC mismatch or a slot write that failed).
+    // This used to fresh-boot too, under a log line that blamed the host.
+    FailJoinNoWorld_(coop::net::EndReason::WorldUnusable,
+                     "the world arrived damaged: the CRC or the slot write failed");
 }
 
 }  // namespace

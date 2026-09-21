@@ -10,6 +10,7 @@
 #include "coop/element/element.h"   // Element::GetActor
 #include "coop/element/registry.h"  // the host's eid-to-actor lookup
 #include "coop/config/config.h"  // the test-cue flag
+#include "coop/config/config_registry.h"  // [dev] stall_world_stream_at_pct, the stalled-download drill
 #include "coop/interactables/meadow_db_sync.h"  // the join-seed multiset snapshot at the blob instant
 #include "coop/interactables/signal_sync.h"  // the seed snapshot capture and cancel
 #include "coop/world/email_sync.h"           // the seed snapshot capture and cancel
@@ -106,6 +107,7 @@ struct HostStream {
     uint32_t  firstReadCrc = 0;
     bool      haveFirstRead = false;
     int       readAttempts = 0;
+    bool      stallSaid = false;   // [dev] stall_world_stream_at_pct said its piece once
     std::vector<uint8_t> blob;     // captured stable blob (per-slot copy; 17MB,
                                    // freed on completion -- joins are rare)
 };
@@ -503,6 +505,26 @@ void TickHost() {
                 continue;  // backpressure (or slot dropped) -- retry next tick
             }
             hs.beginSent = true;
+        }
+        // [dev] stall_world_stream_at_pct: stop handing chunks over once this much of the blob
+        // has gone, and keep the connection and the beacon alive. It stages a download that STOPS
+        // on a healthy link -- the one shape a fixed transfer cap used to answer by declaring the
+        // host's save unavailable and booting a fresh world. Resolved once; a host knob, so a
+        // joiner sees an ordinary host that went quiet mid-stream.
+        static const long sStallPct =
+            coop::config::ResolveInt(::coop::config_registry::rows::stall_world_stream_at_pct);
+        const uint32_t stallAfter =
+            sStallPct > 0 ? static_cast<uint32_t>(
+                                (static_cast<uint64_t>(hs.chunkCount) * sStallPct) / 100)
+                          : 0;
+        if (stallAfter > 0 && hs.nextChunk >= stallAfter) {
+            if (!hs.stallSaid) {
+                hs.stallSaid = true;
+                UE_LOGW("save_transfer: [dev] stall_world_stream_at_pct=%ld -- slot %d STALLED at "
+                        "%u/%u chunks; the link stays up and the beacon keeps naming this phase",
+                        sStallPct, slot, hs.nextChunk, hs.chunkCount);
+            }
+            continue;  // the beacon below is skipped too: a stalled stream reports no new number
         }
         for (int n = 0; n < kChunksPerTick && hs.nextChunk < hs.chunkCount; ++n) {
             const size_t off = static_cast<size_t>(hs.nextChunk) * coop::net::kSaveChunkBytes;
