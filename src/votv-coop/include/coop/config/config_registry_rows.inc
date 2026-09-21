@@ -63,9 +63,9 @@ CFG_FLAG(net_ratecontrol, "net.ratecontrol", "net", false, "VOTVCOOP_NET_RATECON
     "Whether the mod paces each connection at a rate it MEASURES, instead of the fixed rate the "
     "transport writes once from the ping at connect and never revisits. UNFINISHED and off by "
     "default: it reaches the link's capacity where there is headroom, and overdrives a thin "
-    "uplink, because the round trip it steers by is taken on the priority lane and does not see "
-    "the bulk queue. Turning it on is how that is measured; net.sendrate_kbs above overrides "
-    "it either way.")
+    "uplink, because the delay baseline it steers by re-anchors on recent samples and drifts "
+    "up to meet a standing queue. Turning it on is how that is measured; net.sendrate_kbs "
+    "above overrides it either way.")
 CFG_INT(net_fakelink_kbs, "net.fakelink_kbs", "net", 0, 0, 1048576, "VOTVCOOP_NET_FAKELINK_KBS",
     "Simulated OUTBOUND link capacity, KB/s (GNS FakeRateLimit_Send: a process-global policer "
     "that silently DROPS packets beyond the budget -- worst-case thin-uplink physics). 0 = off. "
