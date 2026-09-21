@@ -30,9 +30,11 @@ void SetSession(coop::net::Session* session);
 // clock read -- because the owners call it from their per-tick loops.
 void NotePhase(int slot, coop::net::HostJoinPhase phase, uint32_t done, uint32_t total);
 
-// Send what is due: one note per slot noted since the last Tick, at most once a second, and at
-// once when the phase CHANGED (a joiner should see a transition without a second of lag). From the
-// net pump's tick, after the owners have run.
+// Send what is due: one note per slot noted since the last Tick, at most one ATTEMPT a second, and
+// one at once when the phase changed (a joiner should see a transition without a second of lag).
+// The cadence bounds attempts rather than arrivals, so a link that refuses a note does not turn
+// this into a per-tick retry; the second after carries a fresher note anyway. From the net pump's
+// tick, after the owners have run.
 void Tick();
 
 // The slot left mid-join, or the session ended: drop its note state so a recycled slot starts
