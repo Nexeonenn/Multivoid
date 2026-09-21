@@ -143,8 +143,8 @@ alone.
 
 ### The quick-slot bar's icons
 
-The bar across the top of the screen draws one icon per carried item, and the game could leave
-those icons blank after a world load until the player touched something. One Blueprint verb
+The bar across the top of the screen draws one icon per carried item, and those icons could be
+blank after a world load until the player touched something. One Blueprint verb
 rebuilds the bar whole: it lists what the player carries, clears every slot image to the engine's
 placeholder black, then writes each icon from a lookup into two tables that must agree -- a name
 table on the prop renderer actor, and a texture array on the game instance.
@@ -153,11 +153,12 @@ Those tables are not ready when the world is. The renderer draws every prop in t
 texture and publishes the pair when it has finished, which takes seconds, and the game's own
 post-load refresh of the bar runs before that. Measured on the test rig, that refresh ran about
 eleven seconds after the world came up with the texture array still empty; every lookup came back
-with nothing and the black stayed. Nothing rebuilt the bar afterwards either, because at the
-moment it publishes, the renderer refreshes the equipment panel and not the bar, nothing binds the
-delegate it broadcasts, and the game mode's handler for the matching event is empty. So the bar
-stayed blank until some ordinary action -- a pickup, a drop, opening the inventory -- rebuilt it,
-which is why touching an item cured it.
+with nothing and the black stayed. Nothing rebuilt the bar afterwards either: at the moment it
+publishes, the renderer refreshes the equipment panel and not the bar, nothing binds the delegate
+it broadcasts, and the game mode's handler for the matching event is empty. So the bar stayed blank
+until some ordinary action -- a pickup, a drop, opening the inventory -- rebuilt it, which is why
+touching an item cured it. Whether that ordering also goes wrong without the mod is not settled
+here: every measurement above was taken with the mod loaded.
 
 The mod supplies the notification the renderer never sends. Once per world, when both tables are
 ready and the bar is showing no icon for something the player is carrying, it calls the game's own
