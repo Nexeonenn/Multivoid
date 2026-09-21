@@ -13,11 +13,13 @@ under [architecture.md](architecture.md)'s transport section; the join's own dow
 ### The transport contributes no estimate
 
 GameNetworkingSockets writes a connection's send rate once at connect, from the ping, and
-thereafter only clamps it into the configured minimum and maximum. A link past a few milliseconds
-of ping therefore runs at the configured floor for its whole life, whatever it can actually carry.
-Where the minimum and the maximum are written to one value -- which is how an application says it
-owns the rate, and what the mod does on every connection -- the clamp takes the transport's
-"bandwidth estimation disabled" branch and the ping-derived guess is never consulted at all.
+thereafter only clamps it into the configured minimum and maximum. That opening estimate is an
+initial window of 4,380 bytes divided by the round trip, so it falls under the transport's own
+256 KB/s stock floor at about seventeen milliseconds of ping, and a link past that runs at the
+configured floor for its whole life whatever it can actually carry. Where the minimum and the
+maximum are written to one value -- which is how an application says it owns the rate, and what the
+mod does on every connection -- the clamp takes the "bandwidth estimation disabled" branch instead
+and the ping-derived guess is never consulted at all.
 
 Nothing writes a rate globally. `coop/net/send_rate_control` is the sole source of a steering
 decision, one per connection; `coop/net/connection_tuning` makes the only other write, opening each

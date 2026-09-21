@@ -157,8 +157,14 @@ with nothing and the black stayed. Nothing rebuilt the bar afterwards either: at
 publishes, the renderer refreshes the equipment panel and not the bar, nothing binds the delegate
 it broadcasts, and the game mode's handler for the matching event is empty. So the bar stayed blank
 until some ordinary action -- a pickup, a drop, opening the inventory -- rebuilt it, which is why
-touching an item cured it. Whether that ordering also goes wrong without the mod is not settled
-here: every measurement above was taken with the mod loaded.
+touching an item cured it.
+
+That ordering goes wrong without the mod as well. Measured on a first load with the mod's own
+library absent -- the loader, one read-only script and nothing else in the process -- the name table
+and the texture array were published 269 ms apart and all ten slots were still on the placeholder
+five seconds later, while the first slot held an item whose name and count were both drawn. The same
+save, loaded the same way with the library present, published them 274 ms apart and ended
+identically. So the window is the game's, and nothing the mod does per frame widens it.
 
 The mod supplies the notification the renderer never sends. Once per world, when both tables are
 ready and the bar is showing no icon for something the player is carrying, it calls the game's own
@@ -169,6 +175,14 @@ that window, between the game's refresh and the mod's first look; asking whether
 still answers correctly afterwards. The texture array lives on the game instance rather than the
 world, so a second world loaded in the same process finds the icons already built and the question
 costs one comparison.
+
+It does not reach every world yet, and the gap is the ordinary one. The rebuild rides the session's
+tick, and the branch that would carry it in a world with no session is chosen once, from whether the
+process booted straight into gameplay -- so a launch that starts at the main menu, which is every
+launch a player makes, never reaches it however long it then spends in a world. Measured: with the
+library loaded and no session, a first load from the menu left all ten slots on the placeholder and
+the rebuild never ran. The bar is rebuilt today when a session is live, or when a run boots directly
+into a world; a solo load from the menu is the open case.
 
 ## Who owns what
 
@@ -200,6 +214,7 @@ scoreboard fills as roster rows arrive; nameplates appear with each puppet's fir
 | The native screens' frames do not yet reproduce the game's bevelled, nested border material; the flat border was measured wrong | `[V]` [votv-ui-style.md](votv-ui-style.md), the frame section |
 | The game's own toasts a client self-generates from diverged world state are not suppressed or mirrored; only the server state behind one family is driven | `[V]` `coop/interactables/serverbox_sync` is the one family |
 | The old ImGui browser is kept as a fallback, a deliberate exception to retiring replaced code | `[V]` `ui/server_browser_surface` |
+| The quick-slot bar's rebuild does not reach a solo world entered from the main menu: the branch carrying it is chosen once, from whether the process booted into gameplay, so an ordinary launch never takes it | `[V]` `harness/session_runtime`, the idle branch; measured with the library loaded and no session, ten slots left on the placeholder |
 
 ## Code map
 
