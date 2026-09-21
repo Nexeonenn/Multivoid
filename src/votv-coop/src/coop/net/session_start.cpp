@@ -58,23 +58,19 @@ bool EnsureGnsInit() {
     }
     // NOTHING GLOBAL SETS THE SEND RATE ANY MORE. This is where a 1 MiB/s floor and a 25 MiB/s
     // ceiling used to be written for every connection on both topologies, on the premise that a
-    // raised floor protects the unreliable pose stream from a saturated reliable burst. Both halves
-    // were measured wrong: the floor was the RATE on every link a player has, because GNS writes
-    // its estimate once at connect from the ping and thereafter only clamps it -- 63,052 of 63,052
-    // distinct field samples read 1 MiB/s to the byte, and a host uplink thinner than that was
-    // overdriven into pure loss, costing 71% of a 256 KB/s link. The ceiling needed an init ping
-    // under 0.17 ms, and no measurement in the whole arc ever came near it. And the floor did not
-    // protect the pose stream either: nothing drops a queued unreliable message, what starves one
-    // is the shared send buffer, and a reliable RETRANSMISSION is gathered before the lane-priority
-    // loop, so overdrive is what puts a bulk retry ahead of lane 0. The rate is now per connection
-    // and measured -- `coop/net/send_rate_control` decides it and `coop/net/connection_tuning`
-    // opens it -- so a global write here would be a second writer of the one quantity that has an
-    // owner. `docs/NET_SEND_RATE_ARC.md` sections 2, 5.2-5.4, 8f, 8g.
+    // raised floor protects the unreliable pose stream from a saturated reliable burst. Both
+    // halves were measured wrong: the floor was the RATE on every link a player has, since the
+    // transport writes its estimate once at connect and thereafter only clamps it, and it shields
+    // nothing either -- what starves a pose datagram is the shared send buffer, and a reliable
+    // retransmission is gathered ahead of the lane-priority loop. The rate is now per connection
+    // and measured -- `coop/net/send_rate_control` decides it, `coop/net/connection_tuning` opens
+    // it -- so a global write here would be a second writer of a quantity that has an owner.
+    // docs/send-path.md carries the measurements.
     //
     // The overdrive drill knob is the one thing still written globally, and correctly so: it
-    // simulates a thin outbound link with GNS's send policer, which silently drops packets beyond
-    // the token budget. That is the PHYSICS of the box's uplink, not a policy about a link. 0 is
-    // off, the shipped default.
+    // simulates a thin outbound link with the transport's send policer, which silently drops
+    // packets beyond the token budget. That is the PHYSICS of the box's uplink, not a policy about
+    // a link. 0 is off, the shipped default.
     if (auto* utils = SteamNetworkingUtils()) {
         const long fakeKbs =
             coop::config::ResolveInt(coop::config_registry::rows::net_fakelink_kbs);

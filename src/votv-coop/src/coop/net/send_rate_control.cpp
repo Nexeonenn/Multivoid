@@ -144,7 +144,7 @@ int64_t SendRateControl::ServedPeak_(const Measured& m) {
 void SendRateControl::Steer_(Measured& m) {
     // THE LAW. Every term below is a byte count or a ratio of two byte counts; nothing here is
     // compared against a reference derived from its own past, which is the single property both
-    // refuted laws lacked (see the header's block for the measurement that refutes them).
+    // refuted laws lacked (docs/send-path.md carries the measurement that refutes them).
 
     // An idle link decides nothing. A rate is a CEILING, so with nothing queued it costs nothing to
     // leave where it is -- and a rate raised on an empty link is the rate the next burst opens at,
@@ -152,23 +152,17 @@ void SendRateControl::Steer_(Measured& m) {
     if (m.demand < kIdleDemandBytes) { ++m.holdCount; return; }
     // NOT MEASURED, in either of the two ways that happens: an estimate younger than its own time
     // constant, or one that has decayed to nothing because the link went silent while work stayed
-    // queued. This is the whole of the "no reading" behaviour, where the first law needed one answer
-    // per clause and had none -- there is one state here and it holds the rate where it is.
+    // queued. There is one state here, and it holds the rate where it is.
     //
-    // The second half is load-bearing and was a real defect until an audit traced it: `servedBps` is
-    // an arithmetic-shift EWMA and reaches exactly 0, and a slot with bytes queued but nothing on
-    // the wire reads `unacked == 0` -> `inflightMs == 0` -> the CLIMB branch. Every guard below is
-    // then a multiple of zero, so the rate climbed 1.25x per 100 ms to the ceiling unopposed and the
-    // next burst opened there -- root A rebuilt by the controller that exists to end it.
-    //
-    // BOTH estimates are tested, and that is the whole point: the EWMA and the anchor's windowed
-    // maximum do not reach zero together. The ring is 4 samples, so it empties after 400 ms of
-    // silence; the EWMA sheds a quarter of itself per sample and needs about 4 s to reach 0 from a
-    // quarter-megabyte. An audit found the ~3.6 s gap between them reachable and load-bearing: the
-    // guard used to test the EWMA alone while the anchor below divides by the ring, so a link that
-    // had delivered nothing for 400 ms with work still queued passed the guard, met an anchor whose
-    // peak was 0, and was clamped to kFloorBps -- the same defect this comment describes, mirrored,
-    // in the branch that ships by default. A zero from EITHER means "not measured", and holds.
+    // BOTH estimates are tested, and that is the point. `servedBps` is an arithmetic-shift EWMA
+    // that reaches exactly 0, and a slot with bytes queued but nothing on the wire then reads
+    // `unacked == 0` -> `inflightMs == 0` -> the CLIMB branch, where every guard below is a
+    // multiple of zero: the rate climbs unopposed to the ceiling and the next burst opens there.
+    // The two do not reach zero together either -- the ring is 4 samples and empties after 400 ms
+    // of silence, while the EWMA sheds a quarter of itself per sample and takes about 4 s from a
+    // quarter-megabyte -- so testing the EWMA alone leaves a gap in which a link that has delivered
+    // nothing meets an anchor whose peak is 0 and is clamped to kFloorBps, the same defect
+    // mirrored. A zero from EITHER means "not measured", and holds.
     const int64_t peak = ServedPeak_(m);
     if (m.servedSamples < kServedWarmupSamples || m.servedBps <= 0 || peak <= 0) {
         ++m.holdCount;

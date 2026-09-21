@@ -3,42 +3,16 @@
 // The transport admits a message only while a connection's pending bytes plus that message fit the
 // send buffer, and that sum is connection-wide: a bulk stream at the brim refuses the unreliable
 // pose and voice datagrams beside it, and the probe that times the path they ride. This rule bounds
-// OUR contribution to that brim -- every reliable send but the probe pair stops short of a reserve.
-// It is NOT a guarantee of room: the transport re-queues a NACKed segment from unacked back into
-// pending with no admission check, so on a lossy link pending passes the buffer size from outside
-// while we add nothing. A send this rule refuses is never lost -- it goes to the backlog, or it is
-// the save pump's pacing signal, which is what a full buffer already meant to it.
+// OUR contribution to that brim -- every reliable send but the probe pair stops short of a reserve
+// -- and a SECOND bound, in TIME, holds the unqueued path to a budget of this link's own measured
+// delivery, because bytes inside the transport can be neither retracted nor reordered. Neither
+// guarantees room: a NACKed segment is re-queued into pending with no admission check, so on a
+// lossy link it passes the buffer size from outside while we add nothing. A send this rule refuses
+// is never lost -- it goes to the backlog, or it is the save pump's pacing signal.
 //
 // The occupancy compared is an estimate, re-anchored on the transport's own pending total at each
-// link sample with every byte we hand a connection added on the spot. It reads high when a drain
-// went unseen (the safe direction) and low by a bounded amount -- the stream header the transport
-// adds after its own check, and the skew between two loads -- both corrected at the next anchor.
-//
-// THE SECOND BOUND IS IN TIME, AND ONLY THE UNQUEUED PATH PAYS IT. The rule above is in BYTES,
-// which bounds a queue whose drain rate varies by more than an order of magnitude in nothing at
-// all: the same 4 MiB brim measured 5.6 s of queue on one policed joiner and 125.96 s on a slot
-// losing a three-way race for one uplink (`a3_evidence/policed512_on_HOST.log`,
-// `postfix_conc768_HOST.log`; `pendRel / sendRate`, shipped defaults). Bytes in the transport's
-// buffer can be neither retracted nor reordered, so that is how long a cancelled transfer keeps
-// spending a host's uplink, and how far behind everything queued after it starts. So a send on
-// the path that has NO queue behind it -- where a refusal IS the producer's pacing signal, which
-// is what the save pump already reads it as -- is admitted only while this slot's queue is under
-// the time the link needs to drain it.
-//
-// The backlog path keeps the byte rule ALONE, and the reason is not that moving bytes into our own
-// queue would be wrong -- reordering them by lane is precisely what that backlog is for. It is that
-// its producers are one-shot bursts against a sustained stream: the whole join burst measured
-// ~740 KB (`send_backlog.h`), while the world blob is 17 MB offered at 13.1 MB/s, and only the blob
-// was ever measured holding the buffer for two minutes. The time bound is aimed at what pinned it.
-//
-// The shape is MTA's `CLatentSendQueue::DoPulse`
-// (`Shared/mods/deathmatch/logic/CLatentSendQueue.cpp:46-69`): a bulk transfer hands the transport
-// `rate * elapsed` per pulse and keeps the remainder in its own buffer, which is what makes its
-// `CancelSend` free. Our pump already has that buffer (the blob plus its read cursor); what it
-// lacked was the meter. DELIBERATE DIVERGENCE: MTA meters by rate*time with a carried remainder
-// because RakNet publishes no queue depth, while GNS does (`m_cbPendingReliable`, re-anchored
-// here every link sample), so we bound the DEPTH directly -- the same discipline with nothing to
-// integrate and so nothing to drift.
+// link sample: high when a drain went unseen, which is the safe direction, and low by a bounded
+// amount, both corrected at the next anchor. Both bounds' measurements are in docs/send-path.md
 
 #pragma once
 
@@ -65,12 +39,17 @@ public:
     // MEASURED DELIVERY (`SendRateControl::ServedBps`, not the rate the transport is paced at --
     // see there for what that cost). Two seconds is about four times the worst frame the host's
     // game thread takes between pump passes, so the transport never runs dry waiting for the next
-    // one, and it is 63x under the 125.96 s the byte rule alone allowed on a contended uplink.
-    // It bounds what is COMMITTED against the delivery measured at that moment and cannot retract:
-    // a rate that collapses 30x inside a second re-prices bytes already handed over, which is why
-    // a contended arm still shows a tail (section 8j). `[dev] bulk_queue_cap_ms` overrides it;
-    // 0 disables the bound, which is the before-picture and the only way to stage one on a single
-    // binary.
+    // one, and it is 63x under what the byte rule alone allowed on a contended uplink. It bounds
+    // what is COMMITTED against the delivery measured at that moment and cannot retract, so a rate
+    // that collapses inside a second re-prices bytes already handed over and a contended link still
+    // shows a tail. `[dev] bulk_queue_cap_ms` overrides it; 0 disables the bound, which is the
+    // before-picture and the only way to stage one on a single binary.
+    //
+    // MTA's shape, `CLatentSendQueue::DoPulse`
+    // (reference/mtasa-blue/Shared/mods/deathmatch/logic/CLatentSendQueue.cpp:46-69), meters a bulk
+    // transfer by rate*time with a carried remainder. DELIBERATE DIVERGENCE: it has to integrate
+    // because RakNet publishes no queue depth, while the transport here does, so we bound the DEPTH
+    // directly -- the same discipline with nothing to integrate and so nothing to drift.
     static constexpr int64_t kQueueCapMs = 2000;
 
     // Session::Start: a new session opens every slot empty.
@@ -92,12 +71,11 @@ public:
 
     // What this slot's link DELIVERS per second (`SendRateControl::ServedBps`), published from the
     // same link sample that re-anchors the occupancy. Measured delivery, not the rate the transport
-    // is paced at: with the law on, GNS returns our own last written rate verbatim through its
-    // nMin == nMax branch, which on a policed link stood 1.29x above what the link carried -- so a
-    // budget built on it admitted 2.57 s while its name said 2 s, and the metric checking it
-    // divided by the same inflated number. Net thread. A non-positive reading is not stored, so
-    // the last measured rate stands until the next sample; a zero would switch the bound OFF for
-    // this slot rather than tighten it.
+    // is paced at: with the law on it hands back our own last written rate through its equal-bounds
+    // branch, which on a policed link stood 1.29x above what that link carried -- so a budget built
+    // on it admitted 2.57 s while its name said 2 s, and the metric checking it divided by the same
+    // inflated number. Net thread. A non-positive reading is not stored, so the last measured rate
+    // stands until the next sample; a zero would switch the bound OFF for this slot, not tighten it.
     void SetDrainRate(int slot, int64_t bytesPerSec);
 
     // Re-anchor a slot on the transport's pending total (reliable plus unreliable, the sum the

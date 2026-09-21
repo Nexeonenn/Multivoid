@@ -1,24 +1,18 @@
 // coop/net/send_rate_control.h -- what a peer's link actually does, measured per slot.
 //
-// GameNetworkingSockets has no bandwidth estimation in this build: a connection's send rate is
-// written once at connect from the ping and thereafter only clamped into [SendRateMin, SendRateMax],
-// so a link past a few milliseconds of ping runs at the configured floor for its whole life.
-// Steering that rate needs two numbers the transport does not offer, and this is where they come
-// from: the goodput the peer acknowledges, and a round trip we time ourselves on the priority lane
-// the pose stream rides. A busy link reports both once a second; an idle one is probed slowly and
-// silently, because a baseline taken only under load is the queue it is supposed to reveal.
+// The transport offers no bandwidth estimate: it writes a connection's send rate once at connect
+// from the ping and thereafter only clamps it, so a link past a few milliseconds of ping runs at
+// the configured floor for its whole life. This module measures what replaces it -- the goodput
+// the peer acknowledges, and a round trip timed on the lane the pose stream rides -- and DECIDES
+// the rate from it; the session writes that rate to the connection. A busy link reports once a
+// second, an idle one is probed slowly and silently, because a baseline taken only under load is
+// the queue it is meant to reveal. This is the ONLY writer of a send rate: `net.ratecontrol=0`
+// leaves the transport at its stock rate and `net.sendrate_kbs` pins a fixed one, and neither is a
+// fallback, because the behaviour they restore was the defect. The law, the two refuted before it
+// and the measurements that separate them are in docs/send-path.md.
 //
-// From those two numbers this module also DECIDES the rate, and the session writes it to the
-// connection. The law is anchored to the delivery it measures: a rate may not stand far above the
-// bytes the peer is acknowledging, and it brakes when the bytes in flight grow past a few hundred
-// milliseconds of that delivery. Both terms are byte counters, which is the whole point -- see the
-// block below for the two laws that were built and refuted before it.
-//
-// This is now the ONLY writer of a send rate. The 1 MiB/s global floor that used to stand under
-// every connection is deleted (`coop/net/session_start`), so a link is paced by what it measures or
-// by nothing: `net.ratecontrol=0` is a drill's control arm and leaves the transport at its own
-// stock 256 KB/s, and `net.sendrate_kbs` pins a fixed rate for an experiment. Neither is a
-// fallback to the old behaviour, because the old behaviour was the defect.
+// Threading: three byte counters are atomics written at the send and receive choke points from
+// whichever thread reached them, and a fourth ARMS a slot's teardown. The rest is net-thread-only.
 
 #pragma once
 
@@ -28,56 +22,25 @@
 #include <atomic>
 #include <cstdint>
 
-// WHY A BYTE SIGNAL, AND WHAT THE TWO REFUTED LAWS HAD IN COMMON. Both of them judged the link by
-// comparing a DELAY against a reference computed from recent DELAYS -- LEDBAT against a running
-// delay base, ENet's peer throttle against the previous interval's lowest smoothed round trip
-// (`reference/enet/protocol.c:908-911`). A standing queue moves that reference, so "better than
-// baseline" stops meaning anything exactly when it matters. ENet's port was measured doing it: the
-// baseline went from 18 ms to a median of 1,545 ms, its accelerate branch turned true of nearly
-// every reading, and the rate ratcheted to the ceiling for 180 of 210 seconds.
-//
-// The replacement reads the same logs and asks what was ALREADY on the line. Two quantities, both
-// byte counters, neither with a reference that can drift:
-//
-//   served    -- bytes the peer acknowledged plus unreliable bytes handed over, per second. A queue
-//                cannot inflate it: no amount of buffering makes a link deliver more than it can.
-//   inflight  -- `m_cbSentUnackedReliable` divided by the acknowledged rate, i.e. Little's law read
-//                backwards: the milliseconds of delivery standing on the wire. Compared against a
-//                fixed target, never against its own past.
-//
-// Measured on the archived closed-loop run, the two regimes separate with no overlap: while the
-// link was healthy `inflight` ran a median of 60 ms (p90 163) and afterwards a median of 13,055
-// (p10 1,458), and the rate the law applied stood a median of 442x above the delivery it was
-// printing on the same line. Neither term needs the probe, so the probe's own confound -- it rides
-// the High lane, which the scheduler serves ahead of the Bulk queue a transfer stands in -- is
-// structurally absent here. It stays as a DIAGNOSTIC, which is what it now is.
-//
-// Threading: the three byte counters are atomics, written at the send and receive choke points from
-// whichever thread reached them, and a fourth atomic ARMS a slot's teardown from whichever thread
-// tore it down. Everything else is net-thread-only, driven from the session loop.
-
 namespace coop::net {
 
 class SendRateControl {
 public:
     // Below this much work in flight, in either direction, a link counts as idle: it reports
-    // nothing, so an idle session costs no log lines. A rate is a ceiling, and with nothing queued a
-    // ceiling costs nothing.
+    // nothing, and a rate is a ceiling, so with nothing queued it costs nothing to leave alone.
     static constexpr int64_t kIdleDemandBytes = 8 * 1024;
 
-    // Probe cadence, busy and idle. The idle one is what makes `rttMin` a BASELINE: a minimum taken
-    // only from loaded samples absorbs the bottleneck queue, which is the exact defect that
-    // disqualifies the transport's own min-filtered ping as a delay input. 1 Hz of a 32-byte
-    // datagram is 32 B/s per peer, so an idle link is measured for free.
+    // Probe cadence, busy and idle. The idle one is what makes `rttMin` a BASELINE rather than a
+    // reading of the bottleneck queue. 1 Hz of a 32-byte datagram is 32 B/s per peer, so an idle
+    // link is measured for free.
     static constexpr uint64_t kProbeIntervalMs     = 100;
     static constexpr uint64_t kIdleProbeIntervalMs = 1'000;
     // How many probes may be outstanding at once. A ninth would ask nothing the eight unanswered
-    // ones have not already asked, so the mint is skipped and counted; retirement is kProbeLostMs
-    // below, not this.
+    // ones have not, so the mint is skipped and counted; retirement is kProbeLostMs, not this.
     static constexpr int      kMaxOutstanding  = 8;
-    // When an unanswered probe stops being a slow reading and becomes a lost one. This is our
-    // policy, not the transport's: GNS's own connected-timeout defaults to 10 s, twice this, so the
-    // link is still live when we retire a probe -- and an echo that arrives later lands in `stray`.
+    // When an unanswered probe stops being a slow reading and becomes a lost one. Our policy, not
+    // the transport's, whose connected-timeout is twice it -- so the link is still live when we
+    // retire a probe, and an echo that arrives later lands in `stray`.
     static constexpr uint64_t kProbeLostMs = 5'000;
 
     // The window rttMin is taken over, in one-second buckets: long enough that a queue filling for
@@ -87,46 +50,31 @@ public:
     // ---- The control law's constants ----
 
     // The envelope. The floor is an honest minimum -- a join on a link that thin is slow, not
-    // broken. The ceiling is the save pump's own output, which is the biggest producer in the tree:
-    // kChunksPerTick = 4 (coop/save/save_transfer.cpp:151) x kSaveChunkBytes = 56 KiB
-    // (coop/net/protocol.h:1257) at 60 Hz. A rate above that paces nothing that exists.
+    // broken. The ceiling is the save pump's own output, the biggest producer in the tree:
+    // kChunksPerTick x kSaveChunkBytes at 60 Hz. A rate above it paces nothing that exists.
     static constexpr int64_t kFloorBps   = 32 * 1024;
     static constexpr int64_t kCeilingBps = 4LL * 56 * 1024 * 60;
 
     // Where a link opens, for the connect-time write: the window between the transport's
     // ping-derived guess and this controller's first decision belongs to nobody otherwise. Opening
-    // WIDE is precisely the overdrive this controller exists to end -- 17x into a thin link was
-    // measured costing 71% of it -- and opening at the floor makes every join on a good link crawl.
-    // It opens at 4.5x the floor, about 1% of the ceiling: measured reaching the ceiling in three
-    // seconds on a link that has the headroom, and inside a thin link's capacity rather than 17x
-    // outside it. The value is also the rung the refuted ladder happened to open on, kept because
-    // two runs measured it and nothing argues for moving it.
+    // wide is the overdrive this controller exists to end; opening at the floor makes every join
+    // on a good link crawl. 4.5x the floor is about 1% of the ceiling.
     static constexpr int64_t kStartRateBps = 145 * 1024;
 
-    // THE ANCHOR, and the one guard that would have stopped both refuted laws on its own. A rate
+    // THE ANCHOR, and the one guard that would have stopped both refuted laws on its own: a rate
     // may not stand above this multiple of the delivery it is measured against, while there is
-    // reliable work to measure. The archived refuted run sat at a median of 442x.
-    //
-    // The margin above 1.0 is what probes for capacity the link has not yet been asked for, and it
-    // is paid for in LOSS: pacing at k times what the link carries offers (k-1)/k of every packet
-    // to a bottleneck that cannot take it. Measured at k=2 on the drop-policed rig -- goodput 95.3%
-    // of nominal, but the peer reported `qual=51/100`, i.e. about half of what we sent had to be
-    // retransmitted. That is not free here: reliable RETRANSMISSIONS are gathered before the lane
-    // priority loop (§5.2 of the arc doc, `snp.cpp:2476-2547`), so a Bulk retry outranks the lane-0
-    // pose datagram this controller exists to protect. 5/4 is the same probe margin BBR uses and
-    // the same step the climb takes, so the rate tracks delivery instead of standing above it.
+    // reliable work to measure. The margin above 1.0 is paid for in retransmission, and a reliable
+    // retry outranks the lane-0 pose datagram, so it is the probe margin BBR uses and no more.
     static constexpr int kOverdriveNum = 5, kOverdriveDen = 4;
 
-    // THE BRAKE and its dead band, in milliseconds of delivery standing on the wire. Measured on
-    // the archived closed-loop run: the healthy regime's p90 was 163 ms and the collapsed regime's
-    // p10 was 1,458, so a threshold anywhere between flags 93.4% of the collapse and 0.0% of the
-    // health. The climb stops where health stops; the brake fires with an order of magnitude of
-    // margin; between them the rate is left alone, because a controller with no dead band hunts.
+    // THE BRAKE and its dead band, in milliseconds of delivery standing on the wire. The climb
+    // stops where health stopped and the brake fires an order of magnitude under the collapse;
+    // between them the rate is left alone, because a controller with no dead band hunts.
     static constexpr int64_t kQueueClimbMs = 150;
     static constexpr int64_t kQueueBrakeMs = 400;
 
-    // The climb, applied per decision while the brake is silent. The additive term is what carries
-    // a rate off the floor, where a purely multiplicative step crawls.
+    // The climb, per decision while the brake is silent. The additive term is what carries a rate
+    // off the floor, where a purely multiplicative step crawls.
     static constexpr int     kClimbNum = 5, kClimbDen = 4;
     static constexpr int64_t kClimbStepBps = 8 * 1024;
 
@@ -134,23 +82,15 @@ public:
     // sample/4, a ~400 ms time constant. One 100 ms sample is too noisy to brake on, and a full
     // second is too slow for a join to climb inside.
     static constexpr int kServedEwmaShift = 2;
-    // How many samples the ANCHOR takes its maximum over, which is the same span as the EWMA's time
-    // constant. The anchor may not read the EWMA, and the reason is a measured regression: while a
-    // link is climbing, delivery equals the rate and the EWMA lags it by about half, so an anchor
-    // fed by the EWMA clamps BELOW the rate that is already succeeding and fights its own climb --
-    // an unpoliced join went from 5 s under no control at all to 13 s under the law, never reaching
-    // the ceiling. A maximum over the same span has no lag on the way up, because the newest sample
-    // enters it whole, while on the way down it still expires in 400 ms. The two quantities answer
-    // different questions: the EWMA asks "what is this link carrying", the maximum asks "what has
-    // it just been shown to carry".
+    // How many samples the ANCHOR takes its maximum over, the same span as the EWMA's time
+    // constant. The anchor may NOT read the EWMA: while a link climbs, delivery equals the rate and
+    // the EWMA lags it, so an anchor fed by it clamps below a rate that is already succeeding and
+    // fights its own climb. A maximum has no lag on the way up and still expires in 400 ms.
     static constexpr int kServedPeakSamples = 1 << kServedEwmaShift;
     // And how many samples that estimate is worth dividing by. An EWMA is not a measurement before
-    // its own time constant has passed, and the first sample of a transfer is the worst case there
-    // is: the save pump offers 13.1 MiB/s, so the send buffer is already deep while the delivery
-    // estimate is one 100 ms reading old, and `inflight` computed from that pair reads as a stalled
-    // link. Measured: without this the opening second took one spurious brake to the floor on a
-    // link with megabytes of headroom. Until the estimate is warm the link holds at its opening
-    // rate, which is the one state the law has no reason to act on.
+    // its own time constant has passed, and the first sample of a transfer is the worst case:
+    // the buffer is already deep while the estimate is one reading old, and `inflight` computed
+    // from that pair reads as a stalled link. Until it is warm the link holds at its opening rate.
     static constexpr int kServedWarmupSamples = 1 << kServedEwmaShift;
 
     // The rate a connection opens at, for the connect-time write.
@@ -158,66 +98,54 @@ public:
 
     // What this slot's link actually DELIVERS per second, smoothed: the same `served` the anchor
     // bounds against and the per-second line prints. This is what a queue on this link drains at,
-    // and therefore the only honest divisor for a bound expressed in seconds of queue. The
-    // transport's own `m_nSendRateBytesPerSecond` is NOT that number -- it is what GNS is PACED at,
-    // which on a policed link ran 1.29x above delivery, so a cap built on it admitted 2.57 s while
-    // claiming 2 s AND the metric checking it divided by the same inflated figure. A3's lens has
-    // already made this exact correction once (`303c5ef4`, the guard and the bound it protects must
-    // read the same number). 0 until the estimate is warm, which the caller reads as "nothing
-    // measured yet". Net thread: it reads the measured block through its one door.
+    // and so the only honest divisor for a bound expressed in seconds of queue -- the transport's
+    // own paced rate is not that number. 0 until the estimate is warm. Net thread.
     int64_t ServedBps(int slot);
 
     // Session::Start: a new session measures from zero. Called before the net thread exists.
-    // `controlEnabled` false leaves every link at whatever the transport was configured with, and
-    // the measurements still run: that is the A1 behaviour, kept as the before-picture.
-    // `pinnedKbs` is the drill's fixed-rate override in KB/s, 0 for none. It is kept HERE rather
-    // than on the Session because this class already owns the question it answers -- whether this
-    // session's links are steered, pinned, or left alone -- and because `ResolveInt` re-reads the
-    // ini on every call, so resolving it a second time per connection let an ini edited
-    // mid-session pin a link the controller was still steering. One read, at Start, one owner.
+    // `controlEnabled` false leaves every link where the transport was configured and still
+    // measures, which is the before-picture a drill compares against. `pinnedKbs` is the drill's
+    // fixed-rate override in KB/s, 0 for none; it is resolved ONCE here rather than per connection,
+    // because `ResolveInt` re-reads the ini and a mid-session edit would pin a steered link.
     void Reset(bool controlEnabled, long pinnedKbs);
     // Whether this session's links are paced by the law. The session's own resolved answer, so a
     // connection being tuned asks THIS rather than re-reading an ini that resolves live.
     bool Enabled() const { return controlEnabled_; }
     // The drill's fixed-rate override as resolved once at Start; 0 when none.
     long PinnedRateKbs() const { return pinnedKbs_; }
-    // Slot teardown. GNS's pending counters restart with the next connection, so ours must too, or
-    // the next occupant of the slot inherits a byte debt the identity below would read as delivery.
-    // Any thread -- a host-side kick runs on the game thread -- so it ARMS only, and the net thread
-    // performs the whole reset, counters included, at its next touch of the slot. Nothing else keeps
-    // the block below single-owner: a fence cannot, because the reader's arm test and its counter
-    // read are two separate operations.
+    // Slot teardown. The transport's pending counters restart with the next connection, so ours
+    // must too, or the slot's next occupant inherits a byte debt that reads as delivery. Any
+    // thread -- a host-side kick runs on the game thread -- so it ARMS only, and the net thread
+    // performs the reset at its next touch: the reader's arm test and its counter read are two
+    // operations, so no fence could keep the block below single-owner instead.
     void FreeSlot(int slot);
 
-    // Reliable wire bytes GNS ACCEPTED for this slot: the whole packet, which is the number the
-    // peer counts on arrival. Any thread, from the send choke points.
+    // Reliable wire bytes the transport ACCEPTED for this slot: the whole packet, which is the
+    // number the peer counts on arrival. Any thread, from the send choke points.
     void NoteReliableQueued(int slot, int bytes);
-    // Unreliable wire bytes GNS accepted. Counted because the RATE paces the whole connection while
-    // acknowledged delivery can only ever cover the reliable half: anchoring a connection-wide rate
-    // to a reliable-only measurement would clamp an ordinary play session, whose traffic is pose and
-    // voice, down to the floor. There is no acknowledgement to count against these, so the offer is
-    // what stands in -- exact for the anchor's purpose, which is to know what the rate is FOR.
+    // Unreliable wire bytes it accepted. Counted because the RATE paces the whole connection while
+    // acknowledged delivery covers only the reliable half: anchoring a connection-wide rate to a
+    // reliable-only measurement would clamp ordinary play, which is pose and voice, to the floor.
+    // Nothing acknowledges these, so the offer stands in -- exact for knowing what the rate is FOR.
     void NoteUnreliableQueued(int slot, int bytes);
     // Reliable wire bytes this slot's link delivered to us, counting the same kinds the sender
     // counts. Net thread. It is the receiving end of the same quantity, which is what makes a
-    // sender's goodput estimate checkable against a second, independent measurement instead of
-    // against itself.
+    // sender's goodput estimate checkable against a second, independent measurement.
     void NoteReliableReceived(int slot, int bytes);
     // The responder could not put an echo on the wire (the send buffer was at the brim). Counted
-    // here, on the answering side, because to the prober a refused echo and a lost probe look
-    // identical, and telling them apart is the whole question of whether headroom needs a rule.
+    // on the answering side, because to the prober a refused echo and a lost probe look identical.
     void NoteEchoRefused(int slot);
 
-    // What the net thread read off one connection: GNS's send accounting, plus the depth of our own
-    // queue in front of it. Passed in rather than read here, so this file stays free of the
-    // transport API and the session keeps one status read per pass.
+    // What the net thread read off one connection: the transport's send accounting, plus the depth
+    // of our own queue in front of it. Passed in rather than read here, so this file stays free of
+    // the transport API and the session keeps one status read per pass.
     struct LinkSample {
-        int    pendingReliable     = 0;  // m_cbPendingReliable: handed to GNS, not yet on the wire
+        int    pendingReliable     = 0;  // m_cbPendingReliable: handed over, not yet on the wire
         int    sentUnackedReliable = 0;  // m_cbSentUnackedReliable: on the wire, not yet acked
         int    pendingUnreliable   = 0;  // m_cbPendingUnreliable
         int    gnsRateBps          = 0;  // m_nSendRateBytesPerSecond: what it is pacing at now
         int    gnsPingMs           = -1; // m_nPing: an RTT floor (min-filtered), the cross-check
-        size_t backlogBytes        = 0;  // SendBacklog::DepthBytes: queued before GNS ever saw it
+        size_t backlogBytes        = 0;  // SendBacklog::DepthBytes: queued before the transport
     };
 
     // Fold one sample for a slot (net thread, ~10 Hz) and emit that slot's line at 1 Hz.
@@ -227,7 +155,7 @@ public:
     // within the cadence. Net thread. The caller sends `out` and, if the send fails, says so.
     bool NextProbe(int slot, uint64_t nowMs, LinkProbePayload& out);
     // The send of a minted probe failed. Expected, not exceptional: with the send buffer at the
-    // brim -- the state a bulk transfer creates -- GNS refuses every new message, probes included.
+    // brim -- the state a bulk transfer creates -- every new message is refused, probes included.
     void NoteProbeRefused(int slot, uint32_t token);
     // An echo came back. The round trip is measured against OUR record of when that token went out,
     // never against the sentMs the reply carries, so a wrong or hostile echo cannot invent one.
@@ -236,19 +164,16 @@ public:
     // The rate this slot's link should now be paced at, or -1 when there is nothing to write --
     // control disabled, or the law left the rate where the connection already has it. Net thread,
     // and a PEEK: the decision is not spent until `NoteRateWritten` says it reached the transport.
-    // Latching here instead would retire a decision a failed write never delivered, and the law
-    // offers nothing new while its decision leaves the rate where it is -- and the dead band means
-    // it can leave it there for a long time -- so one missed write would strand the link.
+    // Latching here would retire a decision a failed write never delivered, and the dead band can
+    // leave the rate still for a long time, so one missed write would strand the link.
     int64_t PendingRateWrite(int slot);
     // The write landed. `us` is what it cost, folded into the per-second cost line beside the
-    // status read's, because a config write per decision is a claim of its own and only the READ
-    // had ever been measured. Net thread.
+    // status read's, because a config write per decision is a claim of its own. Net thread.
     void NoteRateWritten(int slot, int64_t bps, uint64_t us);
 
     // What the status reads themselves cost, per net-thread pass; reported once a second while any
-    // link is busy, because a 10 Hz per-peer telemetry read is a claim that has to be measured.
-    // `links` is how many connections this pass read, which is why the line reports passes and link
-    // samples as two numbers -- on a three-client host they differ by 3x.
+    // link is busy. `links` is how many connections that pass read, which is why the line reports
+    // passes and link samples as two numbers -- on a three-client host they differ by 3x.
     void NoteSampleCost(uint64_t us, int links, uint64_t nowMs);
 
 private:
@@ -289,19 +214,16 @@ private:
         int         probesSent = 0, probesReplied = 0, probesRefused = 0, probesLost = 0;
         int         probesUnknown = 0;  // an echo for no token of ours
         int         probesSkipped = 0;  // the mint the full outstanding ring refused
-        int         echoesRefused = 0;  // OUR answers to the peer the send buffer would not take
+        int         echoesRefused = 0;  // OUR answers the send buffer would not take
         int         rttBucketMin[kRttMinBuckets]{};
         uint64_t    rttBucketSec[kRttMinBuckets]{};
 
         // ---- The law's state: two smoothed byte rates and what they decided ----
-        // Acknowledged delivery, smoothed over the 10 Hz samples. This is the term `inflight` is
-        // divided by, so it is RELIABLE-ONLY -- `m_cbSentUnackedReliable` is reliable-only too, and
-        // dividing one traffic class by another would measure neither.
+        // Acknowledged delivery, smoothed. The term `inflight` is divided by, so RELIABLE-ONLY:
+        // `m_cbSentUnackedReliable` is too, and dividing one class by another measures neither.
         int64_t  relBps    = 0;
-        // The same, plus unreliable bytes handed over: what the RATE is actually for. This is the
-        // term the anchor bounds against, and the distinction between the two is the answer to the
-        // objection that sank the first law's trigger -- goodput counts reliable delivery while the
-        // rate paces everything, so each comparison here is given the traffic it belongs to.
+        // The same plus unreliable bytes handed over: what the RATE is for, and the term the anchor
+        // bounds against. Each comparison is given the traffic class it belongs to.
         int64_t  servedBps = 0;
         int      servedSamples = 0;    // until the EWMA is warm, neither guard may bind
         // The anchor's own view of the same quantity: the last kServedPeakSamples raw readings, of
@@ -314,13 +236,12 @@ private:
         int64_t  inflightMs = 0;
         // What the law wants, and what the connection was last told, so a write costs one per move.
         // Both open at the rate `TuneConnection` already wrote, NOT at zero: a link whose demand
-        // never reaches kIdleDemandBytes decides nothing -- ordinary play is a few KB/s of pose and
-        // voice -- and zeroes here would report a rate of 0 while the transport paced the opening
-        // one. Set by Reset and by Take_'s armed teardown.
+        // never reaches kIdleDemandBytes decides nothing, and zeroes here would report a rate of 0
+        // while the transport paced the opening one. Set by Reset and by Take_'s armed teardown.
         int64_t  rateBps     = 0;
         int64_t  rateWritten = 0;
         // Which branch the law took, per reported second. `anchor` counts the decisions the
-        // overdrive bound had to pull back, which is the number that says whether it is load-bearing.
+        // overdrive bound pulled back, which is the number that says whether it is load-bearing.
         int      climbCount = 0, brakeCount = 0, anchorCount = 0, deadCount = 0, holdCount = 0;
         int      rateWrites = 0;
     };
@@ -344,15 +265,14 @@ private:
     // Retire outstanding probes older than kProbeLostMs, counting them lost.
     static void ExpireOutstanding_(Measured& m, uint64_t nowMs);
     // The anchor's bound: the largest raw `served` reading in the window. Separate from the EWMA
-    // because they answer different questions AND because they reach zero at different times --
-    // the guard in `Steer_` has to test this one, since this is what the anchor divides by.
+    // because they answer different questions AND reach zero at different times -- the guard in
+    // `Steer_` tests this one, since this is what the anchor divides by.
     static int64_t ServedPeak_(const Measured& m);
     // Start a fresh 1 Hz reporting window at `nowMs`.
     static void OpenWindow_(Measured& m, uint64_t nowMs, int64_t delivered, uint64_t recv);
 
-    // The law, run once per 10 Hz sample against the two smoothed rates. It runs on the SAMPLE
-    // cadence and not on the reported second, because a join has to climb inside its own download;
-    // it does NOT run per round trip, because a round trip is no longer an input.
+    // The law, run once per 10 Hz sample against the two smoothed rates -- on the SAMPLE cadence,
+    // not the reported second, because a join has to climb inside its own download.
     static void Steer_(Measured& m);
 
     Slot slots_[kSlots];
