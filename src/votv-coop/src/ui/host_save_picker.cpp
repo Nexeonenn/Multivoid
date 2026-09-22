@@ -14,6 +14,7 @@
 #include "ue_wrap/engine/save_browser.h"
 
 #include "imgui.h"
+#include "ue_wrap/world/game_mode.h"
 
 #include <atomic>
 #include <cstdint>
@@ -115,9 +116,10 @@ void DoHostNew() {
     sm::SaveChoice c;
     c.newGame = true;
     c.newName = g_newName;
-    c.mode = 0;  // Story (the coop target). Sandbox/Infinite NEW games need the native
-                 // map picker (cbox_sboxLevel) -- a later increment; for those, host an
-                 // EXISTING save from the list (any mode lists + hosts fine).
+    // Story: a NEW game in any other mode needs the native map picker (cbox_sboxLevel), which
+    // this window does not carry. Hosting an EXISTING save of any mode works, and the joiner
+    // then comes up in it.
+    c.mode = ue_wrap::game_mode::kStory;
     // A brand-new game's load is the SLOWEST host boot (the save isn't loadable for tens
     // of seconds), so the no-feedback window was the worst here -- this is exactly where
     // the user self-joined. Cover the menu the instant the action is accepted.

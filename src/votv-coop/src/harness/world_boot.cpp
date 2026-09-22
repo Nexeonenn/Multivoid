@@ -289,8 +289,10 @@ void DriveHostBootIfPending() {
     if (!b->ph.save.newGame) b->slot.assign(b->ph.save.slot.begin(), b->ph.save.slot.end());  // ASCII
     b->created = !b->ph.save.newGame;  // existing save: nothing to create
 
+    const std::string newGameWhat =
+        "NEW " + ue_wrap::game_mode::NameOrOrdinal(b->ph.save.mode) + " game";
     UE_LOGI("harness: host-with-save -- %s '%s' -> load then host",
-            b->ph.save.newGame ? "NEW story game" : "load",
+            b->ph.save.newGame ? newGameWhat.c_str() : "load",
             b->ph.save.newGame ? b->ph.save.newName.c_str() : b->ph.save.slot.c_str());
 
     for (int i = 0; i < 80 && !coop::shutdown::IsShuttingDown(); ++i) {  // ~120 s cap

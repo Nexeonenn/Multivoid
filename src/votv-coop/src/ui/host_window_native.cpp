@@ -21,6 +21,7 @@
 #include "ue_wrap/engine/engine.h"
 #include "ue_wrap/engine/save_browser.h"
 #include "ue_wrap/engine/umg_build.h"
+#include "ue_wrap/world/game_mode.h"
 
 #include <windows.h>
 
@@ -420,7 +421,10 @@ void DoNext() {
         // hosted from here died on "slot already exists".
         c.newName       = "Coop";
         c.nameIsDerived = true;
-        c.mode    = 0;   // enum_gamemode story
+        // Story, as on the other host surface: a NEW game in any other mode needs the native map
+        // picker (cbox_sboxLevel), which this window does not carry. Hosting an EXISTING save of
+        // any mode works, and the joiner then comes up in it.
+        c.mode    = ue_wrap::game_mode::kStory;
     } else {
         const sb::SaveInfo& save = g_saves[static_cast<size_t>(sel)];
         // The game's own slot menu stops on a save of another version with "Conflict version!", the
