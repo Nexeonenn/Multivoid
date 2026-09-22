@@ -31,6 +31,10 @@ using Clock = std::chrono::steady_clock;
 // A sponge dabs every 0.25 s, so these bounds are minutes of wiping, never reached in play.
 constexpr size_t kMaxQueued = 256;
 constexpr auto kInboundTtl = std::chrono::seconds(20);
+// Dabs replayed per tick. Four peers wiping flat out produce sixteen a second between them; this
+// is the frame rate times that, so a backlog drains in well under a second and no frame pays for
+// more than eight canvas draws.
+constexpr int kDrainPerTick = 8;
 
 bool Verbose() {
     static const bool s = ::coop::config::ResolveFlag(::coop::config_registry::rows::window_stroke_log);
@@ -41,6 +45,8 @@ std::atomic<coop::net::Session*> g_session{nullptr};
 std::atomic<bool> g_armed{false};  // connected: the observer ignores every draw otherwise
 int  g_wireApplyDepth = 0;         // GT: our own replay's draw is not a local stroke
 bool g_hookInstalled = false;
+bool g_hookArmed = false;
+int  g_resolveRetry = 0;   // frames left before the next resolve attempt (GT only)
 
 // Outbound: stroke corners taken inside the Func hook, sent from Tick (both game thread).
 std::vector<std::pair<float, float>> g_outbound;
@@ -143,15 +149,33 @@ void ApplyInbound() {
         }
         return;
     }
-    while (!g_inbound.empty()) {
+    // A budget, because the queue really does fill: while the window is unresolved or a signal is
+    // playing, nothing leaves it but an expired dab, and a signal playing is ordinary play. A dab
+    // costs a canvas open, two scalar writes and a draw -- six engine dispatches -- so draining a
+    // full queue in one frame would spend some fifteen hundred of them in that frame. The rest keep
+    // their place and their deadline and go out on the next tick, which at this budget is four
+    // times the rate three peers can fill it at.
+    for (int drawn = 0; drawn < kDrainPerTick && !g_inbound.empty(); ++drawn) {
+        // The deadline holds on this path as well as on the parked one: a dab that waited out the
+        // window is a wipe from a minute ago, and drawing it now paints over what has happened
+        // since. Expiring here costs the draw, not the tick's budget.
+        if (now >= g_inbound.front().deadline) {
+            g_inbound.pop_front();
+            ++g_expired;
+            --drawn;
+            continue;
+        }
         const WC::Dab dab = g_inbound.front().dab;
         g_inbound.pop_front();
         ++g_wireApplyDepth;
         const bool ok = WC::DrawDab(win, dab);
         --g_wireApplyDepth;
         if (!ok) {
-            UE_LOGW("window_stroke: replay failed at (%.1f,%.1f)", dab.x, dab.y);
-            continue;
+            // One attempt, not one per queued dab: a draw fails because something it needs did not
+            // resolve, and that answer will not differ for the dab behind it in the same frame.
+            UE_LOGW("window_stroke: replay failed at (%.1f,%.1f) -- holding the rest for next tick",
+                    dab.x, dab.y);
+            return;
         }
         ++g_applied;
         if (Verbose() || g_applied <= 3 || g_applied % 200 == 0)
@@ -188,12 +212,41 @@ void Tick() {
     auto* s = g_session.load(std::memory_order_acquire);
     const bool connected = s && s->connected();
     g_armed.store(connected, std::memory_order_relaxed);
-    if (!WC::EnsureResolved()) return;
+    // The resolve walks three classes and two functions, and a miss is not memoised, so a world
+    // without the bay window would pay those walks every frame. Sixty frames between tries, the
+    // shape the neighbouring installs use; the first success latches inside EnsureResolved.
+    if (g_resolveRetry > 0) { --g_resolveRetry; return; }
+    if (!WC::EnsureResolved()) {
+        g_resolveRetry = 60;
+        return;
+    }
     RegisterWithScanHub();
     if (!g_hookInstalled) {
-        g_hookInstalled = true;  // InstallPostHook is idempotent and process-lifetime
-        const bool ok = ue_wrap::ufunction_hook::InstallPostHook(WC::DrawMaterialFn(), &OnDrawPost);
-        UE_LOGI("window_stroke: K2_DrawMaterial post-hook %s", ok ? "installed" : "FAILED");
+        // InstallPostHook is idempotent, so a failure is retried rather than latched: it fails when
+        // the Func slot reads null or the table is full, and the first of those can be a resolve
+        // that has not settled. Without the retry one bad tick left the lane dead for the process.
+        const bool ok = ue_wrap::ufunction_hook::InstallPostHook(WC::DrawMaterialFn(), &OnDrawPost,
+                                                                 /*armed=*/connected);
+        if (ok) {
+            g_hookInstalled = true;
+            g_hookArmed = connected;
+            UE_LOGI("window_stroke: K2_DrawMaterial post-hook installed");
+        } else {
+            g_resolveRetry = 60;
+            static bool s_saidFailed = false;
+            if (!s_saidFailed) {
+                s_saidFailed = true;
+                UE_LOGW("window_stroke: K2_DrawMaterial post-hook FAILED -- retrying; no dab of this "
+                        "peer's own will be seen until it installs");
+            }
+            return;
+        }
+    }
+    // The hook sits on a native the game draws through with no session at all, so it is armed only
+    // while there is one: disarmed, the forwarder pays one load and a branch and never calls back.
+    if (g_hookInstalled && g_hookArmed != connected) {
+        ue_wrap::ufunction_hook::SetArmed(WC::DrawMaterialFn(), &OnDrawPost, connected);
+        g_hookArmed = connected;
     }
     if (!connected) {
         g_outbound.clear();

@@ -85,18 +85,28 @@ bool EnsureMaterialFns() {
     return g_setScalarFn && g_getScalarFn;
 }
 
-bool SetScalar(void* mid, const wchar_t* name, float value) {
+// The two parameter names, converted once. StringToFName DISPATCHES ProcessEvent, so converting a
+// literal per call would put an engine dispatch in front of every scalar read and write -- four per
+// dab replayed. The drone's dust parameter is cached the same way and for the same reason.
+R::FName NameOnce(R::FName& slot, const wchar_t* name) {
+    if (slot.ComparisonIndex == 0 && slot.Number == 0) slot = fname_utils::StringToFName(name);
+    return slot;
+}
+R::FName g_nOpac{0, 0};
+R::FName g_nCol{0, 0};
+
+bool SetScalar(void* mid, R::FName name, float value) {
     ParamFrame f(g_setScalarFn);
     if (!f.valid()) return false;
-    f.Set<R::FName>(L"ParameterName", fname_utils::StringToFName(name));
+    f.Set<R::FName>(L"ParameterName", name);
     f.Set<float>(L"Value", value);
     return Call(mid, f);
 }
 
-bool GetScalar(void* mid, const wchar_t* name, float& out) {
+bool GetScalar(void* mid, R::FName name, float& out) {
     ParamFrame f(g_getScalarFn);
     if (!f.valid() || f.ParamOffset(L"ReturnValue") < 0) return false;
-    f.Set<R::FName>(L"ParameterName", fname_utils::StringToFName(name));
+    f.Set<R::FName>(L"ParameterName", name);
     if (!Call(mid, f)) return false;
     out = f.Get<float>(L"ReturnValue");
     return true;
@@ -229,7 +239,8 @@ bool ReadHeldBrush(void* mainPlayer, float& size, float& opac, float& col) {
     // cannot be read, fall back to the held-sponge formula: 0.4 x strength, doubled with soap.
     void* mid = g_offDynmat >= 0 ? ReadField<void*>(held, g_offDynmat) : nullptr;
     if (mid && R::IsLive(mid) && EnsureMaterialFns() &&
-        GetScalar(mid, L"opac", opac) && GetScalar(mid, L"col", col)) {
+        GetScalar(mid, NameOnce(g_nOpac, L"opac"), opac) &&
+        GetScalar(mid, NameOnce(g_nCol, L"col"), col)) {
         return true;
     }
     const float strength = g_offStrength >= 0 ? ReadField<float>(held, g_offStrength) : 1.5f;
@@ -267,8 +278,8 @@ bool DrawDab(void* window, const Dab& d) {
     void* canv = ReadField<void*>(window, g_offCanv);
     if (!canv || !R::IsLive(canv)) return false;
 
-    SetScalar(brush, L"opac", d.opac);
-    SetScalar(brush, L"col", d.col);
+    SetScalar(brush, NameOnce(g_nOpac, L"opac"), d.opac);
+    SetScalar(brush, NameOnce(g_nCol, L"col"), d.col);
     ParamFrame f(g_drawFn);
     f.Set<void*>(L"RenderMaterial", brush);
     f.Set<FVector2D>(L"ScreenPosition", FVector2D{d.x, d.y});
