@@ -34,7 +34,7 @@ from `git shortlog -sne` and fold each person's identity variants together.
 | **arigalit** | code · report | ATV seat contention ([#9](https://github.com/VOTV-MP/Multivoid/pull/9)); join-time prop-count divergence; the grappling-hook lane ([#16](https://github.com/VOTV-MP/Multivoid/pull/16)) — four of its decisions are in the shipped lane | 2 commits · 2 co-authored |
 | **huoyan1231** | code · report | CI and automated builds; the b125 host-log pack | 2 commits · b134 |
 | **Marlore** | code · report | A nine-symptom pass over the trash carry ([#29](https://github.com/VOTV-MP/Multivoid/pull/29)). Four were real defects and are fixed at the root, co-authored: a refused grab that was never answered, a pile that looked different on every peer (865 of 871 measured), a thrower refused every later grab, and a fallen player who kept carrying | 6 commits · unreleased |
-| [**Wigard**](https://github.com/wigarddev) | code | A guest of a sandbox host came up in story ([#32](https://github.com/VOTV-MP/Multivoid/pull/32)) — the transfer header had carried the host's game mode from the start and the host filled it with a constant | 1 commit · unreleased |
+| [**Wigard**](https://github.com/wigarddev) | code | A guest of a sandbox host came up in story ([#32](https://github.com/VOTV-MP/Multivoid/pull/32)) — the transfer header had carried the host's game mode from the start and the host filled it with a constant. Then seven more, each measured red and green before it was sent: a build that did not link on VS 2022 ([#30](https://github.com/VOTV-MP/Multivoid/pull/30)), the shower's mirrored toggle running the wrong verb ([#31](https://github.com/VOTV-MP/Multivoid/pull/31)), a drive left frozen in the port on the far peer ([#33](https://github.com/VOTV-MP/Multivoid/pull/33)), a pile a client bags that the host never learns of ([#34](https://github.com/VOTV-MP/Multivoid/pull/34)), a client's upgrade purchase that charged nobody ([#35](https://github.com/VOTV-MP/Multivoid/pull/35)), a prop whose record changes in place telling no one ([#36](https://github.com/VOTV-MP/Multivoid/pull/36)), the bay window's sponge dabs reaching no other peer ([#37](https://github.com/VOTV-MP/Multivoid/pull/37)), and a client's press of the drone console reaching a drone that cannot fly ([#38](https://github.com/VOTV-MP/Multivoid/pull/38)) | 11 commits · unreleased |
 | [**archhn0madd**](https://github.com/archhn0madd) | code | Rejoin without a relaunch — the boot poll answered from the dying world | 1 commit |
 | **Moddy** | review · design | The architecture and documentation review that became the UE4SS move; the public UE-Modding-Tools pointer that became the blueprint-CFG rung and the migration scanner (patternsleuth); and design published for [Relay](https://github.com/modestimpala/Relay), Moddy's Blueprint networking API for VOTV ([Thunderstore](https://thunderstore.io/c/voices-of-the-void/p/Moddy/Relay/)), in its README and the [README Blueprint](https://blueprintue.com/blueprint/g3s09x9c/) that README links: the watch surface on a Blueprint function, a watch that reads the parameters before the call and can cancel it, and one that only observes after it, which became the script-body gate; the readable join reason and stable diagnostic codes, which became the join screen's named steps and the end-reason codes; the list of cheap edge protections, of which two were missing here: a per-source limit on connections and a private access list on the identity key file; the rule columns that make an actor's own save record its spawn payload, the general form of what this project's prop save-data work was building case by case; the client-only `Quiesce` column, which made this project state its parking rule once and read every park against it; the one paragraph on container handling, which made it write down and measure its own container invariants; the note that a watch on a parent class misses a child's override, which sent us to audit every hook we install, which found three seams that had never installed and two verbs called on the wrong class; and the list of what a returning player's profile covers, which is the list this project's per-player profile now carries | b122 · b143 · 2026-09-02 · b153 · b157 · b160 · b161 · b167 |
 | **SentientYeet** | review | The substrate critique that re-opened the loader decision | b143 |
@@ -134,6 +134,22 @@ Community commits are adopted with their **original authorship preserved**
   host therefore came up in story: story events on, and no cheat menu, noclip or spawn menu for
   that player alone, in a world where the host had all three. The host now reads and sends its own
   mode, and the joiner refuses an ordinal that names no mode. Adopted with authorship preserved.
+
+- **Seven more lanes**, each opened with its own red and green runs
+  ([#30](https://github.com/VOTV-MP/Multivoid/pull/30), [#31](https://github.com/VOTV-MP/Multivoid/pull/31),
+  [#33](https://github.com/VOTV-MP/Multivoid/pull/33) – [#38](https://github.com/VOTV-MP/Multivoid/pull/38)),
+  adopted with authorship preserved. Three include-only lines that make the mod link under the
+  VS 2022 toolset BUILDING.md names. The shower's mirrored toggle, which wrote the bit and asked for
+  a dirt repaint instead of the water. A drive pulled out of the desk's port on one peer, left
+  frozen in the port on the other, where the prop lane drops every pose of the hand carrying it —
+  with a two-peer drill that shows it. A pile a client bags with a folded bag or a roll: nothing
+  crossed at all, and the host's world and save kept the pile. The eighteen upgrade levels, which
+  rode only the transferred save, and a client's purchase, which debited the client and left the
+  group's level untouched. A drive box and a tape reel case whose record changes while they sit
+  there, which reached nobody until this lane watched each class's own refresh verb. The bay
+  window's dirt, a render target wiped one sponge dab at a time, observed at the native draw and
+  replayed on every peer. And the garage console's keyboard, which pressed a client's own mirrored
+  drone, the one whose flight tick is suppressed.
 
 ### archhn0madd
 - **Rejoin without a full relaunch** — the fix for SirWilliam's report below.
