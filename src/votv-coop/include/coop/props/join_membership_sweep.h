@@ -33,6 +33,15 @@ void BeginClaimTracking();
 // costs one bool read). Called from remote_prop_spawn::OnSpawn + the self-announce sites. Game thread.
 void RecordClaimIfTracking(void* actor);
 
+// Record that THIS peer's own player deliberately created `actor` (a spawn-menu or toolgun birth).
+// A different fact from a claim, and unconditional where a claim is bracket-scoped: a claim says
+// the host accounted for the actor in the bracket now open, and BeginClaimTracking clears it, while
+// this says the actor is not divergence at all -- a player-authored birth can precede the bracket
+// and still be waiting on the host's answer when the sweep runs. Consulted by
+// IsInDivergenceUniverseUnclaimed; emptied when a sweep has adjudicated the world, and at teardown.
+// Game thread.
+void RecordSelfAuthored(void* actor);
+
 // True while a snapshot bracket is open (BeginClaimTracking -> sweep/reset). remote_prop_spawn::OnSpawn reads
 // it to gate the level-pile twin-destroy to the join window. Game thread.
 bool IsClaimTrackingActive();

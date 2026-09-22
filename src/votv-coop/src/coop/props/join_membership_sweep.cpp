@@ -50,6 +50,11 @@ namespace {
 // Claim tracking state, game thread only: armed, recorded and swept from the event_feed drain and
 // the net_pump disconnect edge.
 std::unordered_set<void*> g_claimedActors;
+// Actors THIS peer's own player deliberately created (the spawn menu, the toolgun). Not a claim:
+// it owes nothing to a bracket and survives BeginClaimTracking. Emptied wherever a sweep has
+// adjudicated the world, and at teardown, so it holds at most what one player made between two
+// joins. See RecordSelfAuthored.
+std::unordered_set<void*> g_selfAuthored;
 bool g_claimTrackingActive = false;
 
 // The deferred sweep: SnapshotComplete arms it, TickClientReconcile fires it once the load tail
@@ -79,8 +84,26 @@ void RecordClaimIfTracking(void* actor) {
     RecordClaim(actor);
 }
 
+void RecordSelfAuthored(void* actor) {
+    // A DIFFERENT fact from a claim, and it is why this is a second set rather than a flag on the
+    // first. A claim says "the host accounted for this actor in the bracket now open", so it is
+    // scoped to that bracket and cleared when the next one opens. This says "this peer's own
+    // player deliberately made this actor", which is true from the birth and owes nothing to any
+    // bracket -- and the sweep's question is whether an actor is DIVERGENCE, which a thing the
+    // player just made is not, whoever is mid-join.
+    //
+    // Measured, which is why it exists: a client's spawn-menu birth printed
+    // `sweep-candidate=1 claim-tracking=0` one second before the bracket opened, so the claim at
+    // its seam was a no-op and BeginClaimTracking would have cleared it anyway. What saved it that
+    // run was the host's echo landing first; a slower round trip would not have.
+    if (!actor) return;
+    g_selfAuthored.insert(actor);
+}
+
 void BeginClaimTracking() {
     g_claimedActors.clear();
+    // g_selfAuthored deliberately SURVIVES: see RecordSelfAuthored. It is emptied where it stops
+    // meaning anything -- when a sweep has adjudicated the world, and at teardown.
     g_claimTrackingActive = true;
     // A fresh bracket cancels a sweep pending from the prior one (a two-level load) and the fired
     // latch; SnapshotComplete re-arms.
@@ -363,6 +386,7 @@ static void RunDivergenceSweep_(void* localPlayer) {
         // The identity reconcile already ran at the fire edge, before this sweep. The deferred
         // queues survive the bracket; only the spawn-time index resets.
         g_claimedActors.clear();
+        g_selfAuthored.clear();   // the world is adjudicated (here: left alone); nothing left to spare
         g_claimTrackingActive = false;
         coop::pile_spawn_bind::Reset();
         return;
@@ -421,6 +445,7 @@ static void RunDivergenceSweep_(void* localPlayer) {
     // SnapshotBegin) quiescence_drain::OnTick covers it every client tick.
 
     g_claimedActors.clear();
+    g_selfAuthored.clear();   // the sweep has adjudicated; a later bracket re-decides from the host's snapshot
     g_claimTrackingActive = false;
     coop::pile_spawn_bind::Reset();  // the candidate pointers would dangle past the GC below; the deferred reconcile queues survive
     // The engine's own purge follows the mass destroy, as after a level transition: otherwise the
@@ -518,6 +543,11 @@ bool IsInDivergenceUniverseUnclaimed(void* actor) {
     // grab guard in trash_collect_sync, so there is one definition of the lineage.
     if (!actor) return false;
     if (g_claimedActors.count(actor)) return false;  // host-expressed / self-claimed legit drop -> not a ghost
+    // A thing this peer's player just made is not divergence, whatever the bracket is doing. The
+    // claim above cannot carry that fact: it is bracket-scoped and cleared when one opens, while a
+    // player-authored birth can precede the bracket by a second and still be waiting on the host's
+    // answer when the sweep runs.
+    if (g_selfAuthored.count(actor)) return false;
     void* cls = R::ClassOf(actor);
     if (!ue_wrap::prop::IsClassKeyedInteractable(cls)) return false;  // out of the divergence universe
     if (!R::IsLive(actor)) return false;
@@ -552,6 +582,7 @@ void ResetClaimTracking() {
                 "%zu claims dropped, no sweep", g_claimedActors.size());
     }
     g_claimedActors.clear();
+    g_selfAuthored.clear();
     g_claimTrackingActive = false;
     // A mid-snapshot drop also cancels a deferred sweep, or the tick driver would fire it against a
     // torn-down world.

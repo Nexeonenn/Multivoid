@@ -234,6 +234,7 @@ set(VOTVCOOP_SOURCES
     src/coop/props/prop_lifecycle.cpp
     src/coop/props/prop_container_extract.cpp
     src/coop/props/prop_drop_intent.cpp
+    src/coop/props/prop_spawn_authoring.cpp
     src/coop/props/prop_snapshot.cpp
     src/coop/props/prop_save_data.cpp
     src/coop/props/prop_stick_sync.cpp
@@ -514,6 +515,7 @@ set(VOTVCOOP_SOURCES
     src/harness/autotest/autotest_scanparity.cpp
     src/harness/autotest/autotest_worldctx.cpp
     src/harness/autotest/autotest_worldrules.cpp
+    src/harness/autotest/autotest_menuspawn.cpp
     src/harness/autotest/autotest_config.cpp
     src/harness/autotest/autotest_dispatch.cpp
     src/harness/autotest/autotest_damage.cpp

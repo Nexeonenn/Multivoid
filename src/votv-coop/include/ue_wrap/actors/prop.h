@@ -137,6 +137,11 @@ bool IsSleeping(void* prop);
 // the real prop. Game thread (an FName pool read).
 std::wstring GetPropNameString(void* prop);
 
+// The same row, as the FName the field actually holds: no render, no allocation. The form to use
+// in a walk over the object array, where the string form costs a render and a std::wstring per
+// prop in the world. Zero ComparisonIndex for null, a non-prop, or an unset row.
+reflection::FName GetPropName(void* prop);
+
 // Aprop_C.removeWOrespawn, one of the bools the save round-trips. Live Aprop_C only.
 bool ReadRemoveWOrespawn(void* prop);
 

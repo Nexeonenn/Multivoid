@@ -70,6 +70,7 @@
 #include "coop/world/spawn_authority.h"  // the client shared-world spawner park and cancel
 #include "coop/props/host_spawn_watcher.h"  // HOST mirror of those ambient spawner outputs (the pinecone scare)
 #include "coop/props/prop_drop_intent.h"  // client-place -> host-auth keyed-prop DROP INTENT
+#include "coop/props/prop_spawn_authoring.h"  // a PLAYER's spawn verb vs the world's own spawns
 #include "coop/creatures/kerfur_convert.h"  // host-authoritative kerfur on/off conversion (the dupe fix)
 #include "coop/creatures/kerfur_command.h"  // host-authoritative kerfur menu command relay + ownership follow
 #include "coop/creatures/kerfur_menu_input.h"  // client radial-menu verb detection (InpActEvt_use PRE -> kerfur_command relay)
@@ -233,6 +234,7 @@ void Install(coop::net::Session& session) {
     coop::dev::hookdrag_selftest::Install(&session);  // [dev] a hook-dragged prop, both peers logging its position (no-op unless hookdrag_selftest=1)
     coop::dev::roster_token_selftest::Install(&session);  // [dev] successor-ban drill: a token captured from the previous occupant must be refused (no-op unless roster_token_selftest=1)
     coop::host_spawn_watcher::Install(&session);  // HOST mirrors the ambient spawner outputs (the pinecone scare) the line above cancels on the client -- BeginDeferred POST -> PropSpawn-by-eid
+    coop::prop_spawn_authoring::Install(session.role() == coop::net::Role::Client);  // CLIENT: the script-gate bracket that tells a PLAYER's spawn (menu / toolgun) from the world's own -- read by the seam below
     coop::prop_drop_intent::Install(&session);  // CLIENT FinishSpawn post-hook (chains after host_spawn_watcher's) -> place detect -> host DROP INTENT
     coop::kerfur_entity::SetSession(&session);  // the stable-KerfurId authority table: the session for the host id-allocation role gate and the broadcasts
     coop::kerfur_convert::Install(&session);  // host-authoritative kerfur on/off conversion (the dupe fix -- client menu cancel -> request; host verb + converge)
@@ -426,6 +428,7 @@ DisconnectStats DisconnectAll() {
     coop::dev::hookdrag_selftest::EmitVerdict();  // [dev] how far the dragged prop moved here
     coop::dev::hand_drop_selftest::EmitVerdict();  // [dev] which hand episodes fired, and what each peer counted
     coop::prop_drop_intent::Reset();  // clear the client park set + pending places
+    coop::prop_spawn_authoring::Reset();  // drop the menu bracket + the resolved spawn verbs
     coop::host_spawn_watcher::OnDisconnect();  // drop the ambient-prop death-watch list
     coop::kerfur_convert::OnDisconnect();  // drop pending host-menu converges
     coop::kerfur_form_assembler::OnDisconnect();  // dump the containment SUMMARY (always) + close the substrate session gate

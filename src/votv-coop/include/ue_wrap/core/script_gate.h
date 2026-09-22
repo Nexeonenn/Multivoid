@@ -97,6 +97,20 @@ struct Active {
 };
 Active CurrentThreadCall();
 
+// Is `function`'s body running anywhere on this thread's chain of watched bodies -- not only as
+// the innermost one -- and, when `callerFunction` is given, was it entered FROM that caller? Null
+// `callerFunction` means any caller.
+//
+// This is what a consumer asking "is my own verb running right now?" must use. Two things it does
+// that the innermost-only `CurrentThreadCall` and a consumer-side pre/post counter do not. It sees
+// past an inner watched body another consumer owns, which would otherwise hide the outer one. And
+// it cannot get stuck open: the answer lives in the RAII scope the gate pushes around the body, so
+// it unwinds on every path out, including a fault the ProcessEvent firewall absorbs and a Cancel
+// from another consumer -- both of which skip the post callbacks, so a counter incremented in a
+// pre would stay raised for the life of the process and answer "my verb is running" forever.
+// Game thread in practice (the gate never fires callbacks off it); any thread reads its own chain.
+bool IsBodyActive(void* function, void* callerFunction = nullptr);
+
 // The caller's storage for the out parameter at `paramOffset` (an Offset_Internal), or null when
 // the frame carries no such record.
 uint8_t* OutParamPtr(const Call& call, int32_t paramOffset);

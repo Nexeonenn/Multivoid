@@ -145,15 +145,18 @@ void GrabObserver_Aprop_Init_POST_Body(void* self) {
         // litter with no save lineage) are the client's own creations (the toClump morph) and must
         // reach the host, so they fall through to the broadcast.
         if (ue_wrap::prop::IsDescendantOfProp(self)) {
-            // A client-originated Aprop_C world spawn (a drop or a place: simulateDrop,
-            // FinishSpawningActor, a fresh actor with its save Key restored by loadData) is skipped
-            // by the host-authoritative rule, so the host does not learn of a client-placed prop
-            // until an E-grab expresses it; logged with key and eid so a repro correlates with the
-            // host log.
+            // A client-originated Aprop_C world spawn is skipped HERE by the host-authoritative
+            // rule. That is not the same as "the host never learns of it": the drop-intent lane
+            // (coop/props/prop_drop_intent) authors it a tick later when it is a place with a
+            // parked key, one of the four whitelisted device births, a container extract, or a
+            // birth a player's own spawn verb asked for. This line says only that the EXPRESS
+            // declined; read the lane's own `[PROP-DROP] CLIENT authored ...` line, or the
+            // `prop_birth_key_probe` drain exit, for what actually happened to it. Logged with key
+            // and eid so a repro correlates with the host log.
             const coop::element::ElementId dropEid = PT::GetPropElementIdForActor(self);
             const ue_wrap::FVector dloc = ue_wrap::engine::GetActorLocation(self);
-            UE_LOGI("[ROCK-DROP] CLIENT Aprop spawn NOT authored (host-auth skip): cls='%ls' key='%ls' "
-                    "eid=%u loc=(%.1f,%.1f,%.1f) -- host will NOT see this client-placed prop",
+            UE_LOGI("[ROCK-DROP] CLIENT Aprop spawn not expressed here (host-auth skip): cls='%ls' key='%ls' "
+                    "eid=%u loc=(%.1f,%.1f,%.1f) -- the drop-intent lane decides whether it crosses",
                     cls.c_str(), ue_wrap::prop::GetInteractableKeyString(self).c_str(),
                     (dropEid == coop::element::kInvalidId) ? 0u : static_cast<unsigned>(dropEid),
                     dloc.X, dloc.Y, dloc.Z);

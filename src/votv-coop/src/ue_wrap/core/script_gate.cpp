@@ -101,14 +101,33 @@ thread_local void*          t_object = nullptr;
 thread_local void*          t_function = nullptr;
 thread_local const wchar_t* t_name = nullptr;
 
+// The whole chain of watched bodies on this thread, innermost first. CurrentThreadCall answers
+// from the head; IsBodyActive walks it. A consumer asking "is MY verb running?" must be able to
+// see past an inner watched body some other consumer owns, and -- the reason this is a chain
+// rather than a consumer-side counter -- the answer has to unwind with the stack. A consumer
+// counting its own pre and post callbacks is exact only while every pre is paired with a post,
+// and it is not: a fault absorbed by the ProcessEvent firewall unwinds past the post-callback
+// statements below, and any consumer returning Cancel skips the posts for every watch on the
+// call. Either leaves such a counter stuck open for the life of the process, with the consumer
+// believing its verb is running forever. This destructor runs on all three paths.
+struct ActiveScope;
+thread_local ActiveScope* t_activeHead = nullptr;
+
 struct ActiveScope {
+    ActiveScope* prev;
     int prevTag; void* prevObject; void* prevFunction; const wchar_t* prevName;
-    ActiveScope(int tag, void* object, void* function, const wchar_t* name)
-        : prevTag(t_tag), prevObject(t_object), prevFunction(t_function), prevName(t_name) {
+    void* self;     // the body THIS node published, so a walk reads each node without re-deriving
+    void* caller;   // PreviousFrame->Node: WHO called this body, which a verb shared by several
+                    // callers needs to tell a player's route from the world's own
+    ActiveScope(int tag, void* object, void* function, const wchar_t* name, void* callerFunction)
+        : prev(t_activeHead), prevTag(t_tag), prevObject(t_object), prevFunction(t_function),
+          prevName(t_name), self(function), caller(callerFunction) {
         ++t_depth; t_tag = tag; t_object = object; t_function = function; t_name = name;
+        t_activeHead = this;
     }
     ~ActiveScope() {
         --t_depth; t_tag = prevTag; t_object = prevObject; t_function = prevFunction; t_name = prevName;
+        t_activeHead = prev;
     }
     ActiveScope(const ActiveScope&) = delete;
     ActiveScope& operator=(const ActiveScope&) = delete;
@@ -228,7 +247,7 @@ std::uintptr_t __fastcall LoopDetour(void* ctx, void* stack, void* result) {
     }
     std::uintptr_t rv;
     {
-        ActiveScope scope(hit->tag, call.object, fn, hit->name);
+        ActiveScope scope(hit->tag, call.object, fn, hit->name, call.callerFunction);
         rv = g_trampoline(ctx, stack, result);
     }
     FireTable(g_fnTable, fnKey, call, /*post=*/true);
@@ -514,6 +533,13 @@ Active CurrentThreadCall() {
     a.function = t_function;
     a.name = t_name;
     return a;
+}
+
+bool IsBodyActive(void* function, void* callerFunction) {
+    if (!function) return false;
+    for (const ActiveScope* s = t_activeHead; s; s = s->prev)
+        if (s->self == function && (!callerFunction || s->caller == callerFunction)) return true;
+    return false;
 }
 
 std::uint8_t* OutParamPtr(const Call& call, int32_t paramOffset) {

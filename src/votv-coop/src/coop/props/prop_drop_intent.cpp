@@ -8,8 +8,11 @@
 #include "coop/net/session.h"
 #include "coop/player/hand_item.h"          // LocalHandActor (place detect: exclude the hand display)
 #include "coop/props/prop_echo_suppress.h"  // PeekIncomingSpawn (exclude host-echo adopt spawns)
+#include "coop/props/join_membership_sweep.h"// RecordSelfAuthored (a player's own prop is never divergence)
+#include "coop/props/prop_lifecycle.h"      // IsPerPlayerPropClass / IsWireSuppressedPropClass (the host gate)
 #include "coop/props/prop_save_data.h"
-#include "coop/props/prop_element_tracker.h"// GetPropElementIdForActor, ResolveLiveActorByKey   
+#include "coop/props/prop_spawn_authoring.h" // BirthIsPlayerAuthored (the spawn menu / the toolgun)
+#include "coop/props/prop_element_tracker.h"// GetPropElementIdForActor, ResolveLiveActorByKey
 #include "coop/props/container_contents_sync.h"  // TakeObjInFlight -- mark a container-extraction birth
 #include "coop/session/world_load_episode.h"  // InEpisode (quiet during the join loadObjects churn)
 #include "ue_wrap/core/call.h"                   // ParamFrame + Call (setKey on the host re-spawn)
@@ -62,6 +65,13 @@ struct PendingPlace {
     // drop intent, since the client-extracted item's world actor is invisible to the host
     // otherwise (the fresh-birth whitelist covers only reel, module and drive births).
     bool    containerExtract = false;
+    // True when a PLAYER's own spawn verb -- the sandbox spawn menu or the toolgun -- was on the
+    // stack at the finish (coop/props/prop_spawn_authoring). Admitted at drain as an ordinary drop
+    // intent: the class is whatever the catalog offered, so no whitelist can name it, and the
+    // authorship is what makes it shared-world state rather than the per-peer churn every other
+    // unmarked birth here is. Read at the seam because that is the only moment the VM still holds
+    // the calling frame.
+    bool    playerSpawn = false;
 };
 std::vector<PendingPlace> g_pending;         // GT-only
 constexpr size_t kMaxPending  = 32;          // runaway backstop (a settled client rarely has >1 in flight)
@@ -112,23 +122,40 @@ void OnClientFinishSpawn(void* /*context*/, void* /*srcObj*/, void* result) {
     auto* s = LoadSession();
     if (!s || !s->connected()) return;
     if (s->role() != coop::net::Role::Client) return;      // host places broadcast via host_spawn_watcher
+    // Was a player's own spawn verb on the stack? Asked FIRST, because it is the one question only
+    // this instant can answer -- the VM's calling frame is gone by the drain -- and because it is
+    // what exempts a birth from the load gates below.
+    const bool playerAuthored = coop::prop_spawn_authoring::BirthIsPlayerAuthored();
     // The end condition: quiet during the load episode and the reconcile window's load-kind
     // segments (the join and reload bracket, whose spawn churn flooded this path; the echo peek
     // below already scopes our own applies out). A mid-session bracket does not suppress: a
     // client's genuine place has no other delivery channel (the census express is host-only)
     // and the re-bracket sweep would doom it, so intent, host spawn, express, claim must flow.
     // The warning latch mirrors the destroy seam's.
-    if (coop::world_load_episode::InEpisode()) return;     // quiet during the join loadObjects churn
-    if (coop::world_load_episode::InReconcileWindow() &&
-        coop::world_load_episode::ReconcileWindowIsLoadKind()) {
-        static uint32_t sWarned = 0;
-        ++sWarned;
-        if (sWarned <= 5 || (sWarned <= 100 && sWarned % 10 == 0) || sWarned % 100 == 0) {
-            UE_LOGW("[PROP-DROP] client place-detection suppressed #%u (reconcile window, "
-                    "kind=load -- bracket spawn churn; a genuine blind place would re-arrive "
-                    "via rejoin)", sWarned);
+    //
+    // A PLAYER-AUTHORED birth is exempt from both gates. They are a PROXY for "this birth is
+    // loader churn", and authorship is the fact the proxy was standing in for -- so the proxy keeps
+    // its job for everything else and stops guessing about the one case that can now be told
+    // apart. The exemption is not an argument that a player cannot act here: the episode runs to
+    // load-tail quiescence, long after the player has a controller, and the spawn menu's widget is
+    // created during the world's own startup. It is that a player's deliberate creation is not
+    // churn whenever it happens, and has no second delivery if dropped -- the express is host-only,
+    // so a suppressed one is lost for the session rather than re-arriving. Measured in the run that
+    // closed this lane: the player's birth crossed while three churn births in the following second
+    // were still refused.
+    if (!playerAuthored) {
+        if (coop::world_load_episode::InEpisode()) return;  // quiet during the join loadObjects churn
+        if (coop::world_load_episode::InReconcileWindow() &&
+            coop::world_load_episode::ReconcileWindowIsLoadKind()) {
+            static uint32_t sWarned = 0;
+            ++sWarned;
+            if (sWarned <= 5 || (sWarned <= 100 && sWarned % 10 == 0) || sWarned % 100 == 0) {
+                UE_LOGW("[PROP-DROP] client place-detection suppressed #%u (reconcile window, "
+                        "kind=load -- bracket spawn churn; a genuine blind place would re-arrive "
+                        "via rejoin)", sWarned);
+            }
+            return;
         }
-        return;
     }
     void* actor = result;
     if (!actor || !R::IsLive(actor)) return;
@@ -156,9 +183,24 @@ void OnClientFinishSpawn(void* /*context*/, void* /*srcObj*/, void* result) {
             actor, R::ClassNameOf(actor), ue_wrap::prop::GetInteractableKeyString(actor),
             fromContainerExtract);
     }
-    g_pending.push_back(PendingPlace{actor, R::InternalIndexOf(actor), 0, fromContainerExtract});
+    g_pending.push_back(PendingPlace{actor, R::InternalIndexOf(actor), 0, fromContainerExtract,
+                                     playerAuthored});
     if (fromContainerExtract)
         UE_LOGI("[PROP-DROP] CLIENT enqueued container-EXTRACT birth actor=%p (admitted at drain)", actor);
+    if (playerAuthored) {
+        // The mid-join answer (principle 8), and it is owed HERE rather than at the drain. The
+        // divergence sweep dooms every live, unclaimed, in-universe keyed Aprop_C the host's
+        // snapshot did not name -- which a prop this player made a moment ago is, until the host's
+        // answer comes back. It is recorded as SELF-AUTHORED, not claimed: a claim is scoped to the
+        // bracket now open and cleared when the next one opens, and a measured birth beat its
+        // bracket by a second. Authorship is exact here and nowhere else -- an ambient birth
+        // carries no mark, is never recorded, and is still swept, which is what keeps the client
+        // adopting the host's world.
+        coop::join_membership_sweep::RecordSelfAuthored(actor);
+        UE_LOGI("[PROP-DROP] CLIENT enqueued PLAYER-AUTHORED birth actor=%p cls='%ls' "
+                "(spawn menu or toolgun; admitted at drain, claimed against the join sweep)",
+                actor, R::ClassNameOf(actor).c_str());
+    }
 }
 
 // Host: spawn the authoritative prop by key at the transform. Mirrors the spawn receiver's
@@ -171,6 +213,32 @@ void* HostSpawnPlacedProp(const coop::net::PropDropIntentPayload& p, const std::
     if (!clsObj) {
         UE_LOGW("[PROP-DROP] HOST FindClass('%ls') failed -- cannot spawn placed prop key='%ls'",
                 cls.c_str(), key.c_str());
+        return nullptr;
+    }
+    // The lineage gate, on the CLASS, before anything is spawned. This author is the one place a
+    // client names a class the host then constructs, and the spawn-menu door widened its firing
+    // set from four whitelisted lineages to the whole prop catalog -- so what the wire may name
+    // has to be stated here rather than left to the callers. Prop lineage is the whole of it: the
+    // parity write below already assumes it, the intent kinds are all prop lanes, and a creature
+    // or event class arriving on this lane would run an unrelated begin-play on the host's world.
+    // A client cannot reach this with a non-prop class through any built door; refusing is for the
+    // wire, which is not a door.
+    if (!ue_wrap::prop::IsClassDescendantOfProp(clsObj)) {
+        UE_LOGW("[PROP-DROP] HOST refusing spawn intent from slot=%u: class '%ls' is not prop "
+                "lineage (key='%ls')", authorSlot, cls.c_str(), key.c_str());
+        return nullptr;
+    }
+    // Prop lineage is necessary and not sufficient. Two prop-lineage families are ones the host's
+    // own express refuses to broadcast: a per-player class (the inventory container, which is one
+    // actor per peer by design) and a wire-suppressed intermediate variant. Spawned from a wire
+    // intent the host would construct them and then never express them -- one silent actor per
+    // packet, accumulating in its world with nothing to retire it. A client reaches neither
+    // through a built door; this states it for the wire, which is not a door.
+    if (coop::prop_lifecycle::IsPerPlayerPropClass(cls) ||
+        coop::prop_lifecycle::IsWireSuppressedPropClass(cls)) {
+        UE_LOGW("[PROP-DROP] HOST refusing spawn intent from slot=%u: class '%ls' is per-player or "
+                "wire-suppressed -- the host would build it and never express it (key='%ls')",
+                authorSlot, cls.c_str(), key.c_str());
         return nullptr;
     }
     const ue_wrap::FVector  loc{p.locX, p.locY, p.locZ};
@@ -228,7 +296,14 @@ void* HostSpawnPlacedProp(const coop::net::PropDropIntentPayload& p, const std::
     // Scale is a runtime transform (the deferred begin takes location and rotation only); apply
     // it after finishing and before the next-tick drain re-reads the scale for the broadcast.
     if (p.scaleX > 0.001f || p.scaleY > 0.001f || p.scaleZ > 0.001f) {
-        E::SetActorScale3D(actor, ue_wrap::FVector{p.scaleX, p.scaleY, p.scaleZ});
+        // Clamped, because a scale is the one field on this intent a client can make absurd with
+        // no other consequence to itself: the lane reads the client's own actor, so an honest
+        // value is whatever the game gave it, and the bound only has to be past anything the game
+        // does. Client-scoped by the project's rule -- the host's own spawns never come through
+        // here.
+        constexpr float kMaxScale = 100.0f;
+        auto clamp = [](float v) { return v < 0.f ? 0.f : (v > kMaxScale ? kMaxScale : v); };
+        E::SetActorScale3D(actor, ue_wrap::FVector{clamp(p.scaleX), clamp(p.scaleY), clamp(p.scaleZ)});
     }
     // The prop's own save record, if the author's copy is already here. It usually is not -- it
     // rides behind this intent in the same FIFO -- and then it lands on this actor by Key the
@@ -344,7 +419,15 @@ void Tick(coop::net::Session* session) {
         // extracted item as a world actor, and without this the fresh-birth whitelist (reel, module
         // and drive only) drops it at drain and the item never reaches the host's world. The host's
         // duplicate guard keeps the intent safe.
-        if (!parked && !freshBirth && !e.containerExtract) {   // not a place / not a whitelisted birth / not a container extract
+        //
+        // And a PLAYER-AUTHORED birth, the spawn menu and the toolgun. It cannot be a class row:
+        // the menu is the whole catalog, and every class on it is also what the world's own
+        // spawners, morphs and impacts make for themselves. What admits it is the authorship the
+        // seam read off the VM's calling frame, which the world's own births do not carry. It is
+        // NOT a freshBirth: that kind means a device put an item in a hand and sleeps the host's
+        // copy, while a menu prop is dropped in the world at the player's aim and must fall on the
+        // host exactly as it falls here -- the transform block below sends its real physics state.
+        if (!parked && !freshBirth && !e.containerExtract && !e.playerSpawn) {
             probe::NoteDrainExit(e.actor, "not-a-place-nor-whitelisted-birth", e.tries, key);
             continue;
         }
@@ -395,10 +478,19 @@ void Tick(coop::net::Session* session) {
         // tape, an empty disc -- and broadcast that as truth.
         coop::prop_save_data::Publish(session, e.actor, key);
         if (parked) UnparkKey(key);   // consume from BOTH the set AND the FIFO (mirror invariant)
-        probe::NoteDrainExit(e.actor, freshBirth ? "authored-fresh-birth" : "authored-drop-intent",
+        // The claim, for every entry that was not claimed at the seam: this prop is now named on
+        // the wire, so the join sweep must not doom it while the host's answer is in flight. A
+        // player-authored birth claimed itself at the seam; claiming twice is a set insert.
+        coop::join_membership_sweep::RecordClaimIfTracking(e.actor);
+        probe::NoteDrainExit(e.actor,
+                             freshBirth     ? "authored-fresh-birth"
+                             : e.playerSpawn ? "authored-player-spawn"
+                                             : "authored-drop-intent",
                              e.tries, key);
         UE_LOGI("[PROP-DROP] CLIENT authored %s key='%ls' cls='%ls' name='%ls' loc=(%.1f,%.1f,%.1f)%s",
-                freshBirth ? "FRESH-BIRTH intent" : "drop intent",
+                freshBirth     ? "FRESH-BIRTH intent"
+                : e.playerSpawn ? "PLAYER-SPAWN intent"
+                                : "drop intent",
                 key.c_str(), cls.c_str(),
                 WireToWide(p.propName.len, p.propName.data, sizeof(p.propName.data)).c_str(),
                 p.locX, p.locY, p.locZ,

@@ -342,11 +342,16 @@ bool IsSleeping(void* prop) {
     return ReadField<bool>(prop, P::off::Aprop_sleep);
 }
 
-std::wstring GetPropNameString(void* prop) {
+R::FName GetPropName(void* prop) {
     // The lineage gate, as in GetStaticMesh: the Name offset is a stray byte on a non-prop keyed
     // interactable.
-    if (!prop || !IsDescendantOfProp(prop)) return {};
-    return R::ToString(ReadField<R::FName>(prop, P::off::Aprop_Name));
+    if (!prop || !IsDescendantOfProp(prop)) return R::FName{0, 0};
+    return ReadField<R::FName>(prop, P::off::Aprop_Name);
+}
+
+std::wstring GetPropNameString(void* prop) {
+    const R::FName n = GetPropName(prop);
+    return n.ComparisonIndex == 0 ? std::wstring() : R::ToString(n);
 }
 
 bool ReadRemoveWOrespawn(void* prop) {
