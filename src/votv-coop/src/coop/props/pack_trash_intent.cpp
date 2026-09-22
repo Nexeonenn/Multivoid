@@ -14,6 +14,7 @@
 #include "coop/props/remote_prop.h"
 #include "coop/props/trash_channel.h"
 
+#include "ue_wrap/actors/garbage_bag.h"
 #include "ue_wrap/actors/prop.h"
 #include "ue_wrap/core/fname_utils.h"
 #include "ue_wrap/core/log.h"
@@ -110,7 +111,7 @@ void RemedyOnce(void* actor, coop::element::ElementId eid) {
 // the existing prop seams (the finish-spawn watcher and the destroy seam), so nothing is
 // broadcast by hand here.
 bool PerformPack(void* target, uint8_t slot, coop::element::ElementId eid) {
-    void* bagCls = ue_wrap::prop::GarbageBagClass();
+    void* bagCls = ue_wrap::garbage_bag::FilledClass();
     if (!bagCls) {
         UE_LOGW("[PACK-TRASH] prop_garbageBag_C not loaded -- cannot pack eid=%u", eid);
         return false;
@@ -214,8 +215,8 @@ sg::Verdict OnHandUsePre(const sg::Call& call) {
     if (!s || !s->connected() || s->role() != coop::net::Role::Client) return sg::Verdict::Run;
     // The class gate: every hand-usable tool declares this verb, so without it a knife swing would
     // enter here. The classes are resolved by the tests themselves and cached.
-    const bool isFold = ue_wrap::prop::IsGarbBagFold(call.object);
-    const bool isRoll = !isFold && ue_wrap::prop::IsGarbBagRoll(call.object);
+    const bool isFold = ue_wrap::garbage_bag::IsFold(call.object);
+    const bool isRoll = !isFold && ue_wrap::garbage_bag::IsRoll(call.object);
     if (!isFold && !isRoll) return sg::Verdict::Run;
 
     static void*   sFn = nullptr;
@@ -273,9 +274,9 @@ void ConsumeSpentTools() {
             continue;
         }
         int32_t bags = 0;
-        if (!ue_wrap::prop::ReadBagRollCount(t.actor, bags)) continue;
+        if (!ue_wrap::garbage_bag::ReadRollCount(t.actor, bags)) continue;
         bags -= 1;
-        ue_wrap::prop::WriteBagRollCount(t.actor, bags > 0 ? bags : 0);
+        ue_wrap::garbage_bag::WriteRollCount(t.actor, bags > 0 ? bags : 0);
         if (bags <= 0) E::DestroyActor(t.actor);
     }
     g_spent.clear();
