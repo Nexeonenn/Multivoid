@@ -21,6 +21,8 @@ import commit_msg_check as C  # noqa: E402
 
 TRAILERS = "\n\nCo-Authored-By: Someone <someone@example.com>\nClaude-Session: https://example.com/s"
 
+CHERRY = "\n\n(cherry picked from commit aac867c2957afa7ea58013e58b013734d1662ac8)"
+
 GOOD = "[coop] doors address by portable identity\n\nThe game mints a random key per process.\nMeasured: two-peer smoke PASS, keysHash equal on 4 channels." + TRAILERS
 
 # (name, message, must_be_refused, expected fragment of the refusal, hook_mode)
@@ -39,6 +41,21 @@ ARMS = [
     ("13-line body", "[coop] a thing\n\n" + "\n".join("line {}".format(i) for i in range(13)) + TRAILERS, True, "body is 13", False),
     ("12-line body passes", "[coop] a thing\n\n" + "\n".join("line {}".format(i) for i in range(12)) + TRAILERS, False, None, False),
     ("a trailer-shaped body is body", "[coop] a thing\n\n" + "\n".join("Line-{}: value".format(i) for i in range(20)), True, "body is 20", False),
+    # An adopted contribution: `cherry-pick -x` writes the provenance line itself, so it is not one
+    # of the body's twelve. It buys no extra room, and it is recognised both on its own and under a
+    # message that already ends in trailers.
+    ("12-line body plus the cherry-pick line passes",
+     "[coop] a thing\n\n" + "\n".join("line {}".format(i) for i in range(12)) + CHERRY, False, None, False),
+    ("13-line body plus the cherry-pick line still refused",
+     "[coop] a thing\n\n" + "\n".join("line {}".format(i) for i in range(13)) + CHERRY, True, "body is 13", False),
+    ("trailers above the cherry-pick line are trailers too",
+     "[coop] a thing\n\n" + "\n".join("line {}".format(i) for i in range(12)) + TRAILERS + CHERRY, False, None, False),
+    ("the conflict header git writes is dropped in the hook",
+     "[coop] a thing\n\n" + "\n".join("line {}".format(i) for i in range(12)) + CHERRY +
+     "\n\n# Conflicts:\n#\tsrc/a.cpp", False, None, True),
+    ("a sentence about cherry-picking is body",
+     "[coop] a thing\n\n" + "\n".join("line {}".format(i) for i in range(12)) +
+     "\n\n(cherry picked from the other branch)", True, "body is 13", False),
     ("vocabulary in the trailer block", "[coop] a thing\n\nbody\n\nNote: the USER said so\nCo-Authored-By: A <a@b>", True, "USER", False),
     ("Cyrillic in the body", "[coop] a thing\n\nисправлено", True, "Cyrillic", False),
     ("Cyrillic in a trailer", "[coop] a thing\n\nbody\n\nCo-Authored-By: Кто-то <x@y>", True, "Cyrillic", False),

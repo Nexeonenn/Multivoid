@@ -44,12 +44,19 @@ EXEMPT_SUBJECT_RE = re.compile(r'^(Merge (branch|remote-tracking branch|pull req
 TRAILER_LINE_RE = re.compile(r"^([A-Za-z][A-Za-z0-9-]*): \S")
 KNOWN_TRAILER_KEYS = {"co-authored-by", "claude-session", "signed-off-by", "reviewed-by", "acked-by",
                       "tested-by", "fixes", "closes", "see-also", "docs-census"}
+# `git cherry-pick -x` writes this line itself, to record where an adopted commit came from. It is
+# provenance, not prose, so it does not spend one of the body's twelve lines: an outside
+# contribution whose message already fills them would otherwise have to lose a line of its author's
+# words to be adopted. git puts it in its own last paragraph, or inside the trailer block when the
+# message ends in one, so both shapes are recognised.
+CHERRY_PICK_RE = re.compile(r"^\(cherry picked from commit [0-9a-f]{7,40}\)$")
 SCISSORS = "# ------------------------ >8 ------------------------"
 # git's own template lines, dropped in hook mode only (git drops them before recording a message
 # written in the editor; a `#` line in a message passed with -F or -m is recorded and is judged)
 TEMPLATE_PREFIXES = ("# Please enter", "# On branch", "# Your branch", "# Changes to be committed",
                      "# Changes not staged", "# Untracked files", "#\t", "# (use ", "# Lines starting",
                      "# with '#' will be", "# HEAD detached", "# Not currently on any branch",
+                     "# Conflicts:",  # git's own header over the conflicted paths of a merge or a pick
                      "# Author:", "# Date:", "# Committer:", "# It looks like you may be committing",
                      "# If this is not correct", "# Do not modify or remove the line above",
                      "# Everything below it will be ignored")
@@ -123,11 +130,30 @@ def split_message(text, hook_mode=False):
             break
         para_start = i
     last_para = rest[para_start:]
-    if last_para and all(TRAILER_LINE_RE.match(l) or l.startswith((" ", "\t")) for l in last_para):
+    if last_para and all(TRAILER_LINE_RE.match(l) or CHERRY_PICK_RE.match(l) or
+                         l.startswith((" ", "\t")) for l in last_para):
         keys = {TRAILER_LINE_RE.match(l).group(1).lower() for l in last_para if TRAILER_LINE_RE.match(l)}
-        if keys & KNOWN_TRAILER_KEYS:
+        if keys & KNOWN_TRAILER_KEYS or any(CHERRY_PICK_RE.match(l) for l in last_para):
             trailers = last_para
             rest = rest[:para_start]
+            # An adopted commit carries both blocks: the provenance line git appended in its own
+            # paragraph, and the author's trailers above it. Take that paragraph too.
+            if all(CHERRY_PICK_RE.match(l) for l in trailers):
+                while rest and not rest[-1].strip():
+                    rest.pop()
+                para_start = len(rest)
+                for i in range(len(rest) - 1, -1, -1):
+                    if not rest[i].strip():
+                        para_start = i + 1
+                        break
+                    para_start = i
+                prev = rest[para_start:]
+                if prev and all(TRAILER_LINE_RE.match(l) or l.startswith((" ", "\t")) for l in prev):
+                    keys = {TRAILER_LINE_RE.match(l).group(1).lower() for l in prev
+                            if TRAILER_LINE_RE.match(l)}
+                    if keys & KNOWN_TRAILER_KEYS:
+                        trailers = prev + [""] + trailers
+                        rest = rest[:para_start]
     body = [l for l in rest if l.strip()]
     return subject, body, trailers, subject_continues
 
