@@ -69,6 +69,7 @@ set(VOTVCOOP_SOURCES
     src/ue_wrap/devices/atv.cpp
     src/ue_wrap/devices/atv_condition.cpp
     src/ue_wrap/devices/drone.cpp
+    src/ue_wrap/devices/drone_console.cpp
     src/ue_wrap/devices/windturbine.cpp
     src/ue_wrap/devices/door_box.cpp
     src/ue_wrap/desk/device_screen.cpp

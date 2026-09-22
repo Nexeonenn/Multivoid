@@ -13,7 +13,7 @@
 #include "ue_wrap/core/log.h"
 #include "ue_wrap/core/reflection.h"
 #include "ue_wrap/core/script_gate.h"
-#include "ue_wrap/devices/drone.h"
+#include "ue_wrap/devices/drone_console.h"
 
 #include <atomic>
 #include <cstdint>
@@ -23,7 +23,7 @@
 namespace coop::drone_call_intent {
 namespace {
 
-namespace D  = ue_wrap::drone;
+namespace D  = ue_wrap::drone_console;
 namespace R  = ue_wrap::reflection;
 namespace sg = ue_wrap::script_gate;
 
@@ -93,7 +93,7 @@ void Execute(coop::net::Session& s, const coop::net::DroneFlyIntentPayload& p, u
     // world's consoles, the one the sender is standing at. Any of them calls the same drone, so
     // the first within reach is the press.
     void* consoles[4];
-    const int32_t nc = D::LiveGarageConsoles(consoles, static_cast<int32_t>(std::size(consoles)));
+    const int32_t nc = D::LiveConsoles(consoles, static_cast<int32_t>(std::size(consoles)));
     const auto token = coop::element::IntentTarget::ForClientIntent(s, slot, kConsoleReachUU);
     void* console = nullptr;
     for (int32_t i = 0; i < nc && !console; ++i)
@@ -107,13 +107,13 @@ void Execute(coop::net::Session& s, const coop::net::DroneFlyIntentPayload& p, u
     }
     // The lid is the console's own gate on its keyboard, and it is shared state the door lane
     // already carries, so the host reads its own copy rather than trusting the press.
-    if (!D::IsConsoleLidOpen(console)) {
+    if (!D::IsLidOpen(console)) {
         ++g_denied;
         UE_LOGI("[DRONE-CALL] DENY slot=%u -- the console's lid is shut here",
                 static_cast<unsigned>(slot));
         return;
     }
-    if (!D::TriggerFlyFromConsole(console)) {
+    if (!D::TriggerFly(console)) {
         ++g_denied;
         UE_LOGW("[DRONE-CALL] slot=%u -- triggerFly did not dispatch (no drone reference or the "
                 "verb did not resolve)", static_cast<unsigned>(slot));
@@ -145,7 +145,7 @@ sg::Verdict OnActionPre(const sg::Call& call) {
     // Which face this press is belongs to the presser: the cursor fields are written by this
     // machine's own look-at. The other face only toggles leaveAfter5min, which has no lane and
     // stays local.
-    if (!D::IsCursorOnConsoleKeyboard(call.object)) return sg::Verdict::Run;
+    if (!D::IsCursorOnKeyboard(call.object)) return sg::Verdict::Run;
 
     coop::net::DroneFlyIntentPayload p{};
     p.verb = 0;  // the keyboard; the leave-timer face still runs locally and has no lane
@@ -167,7 +167,7 @@ void Install(coop::net::Session* session) {
     // to about 1 Hz -- the coin gun's shape, for the coin gun's reason.
     if (g_consoleCls) return;
     static uint32_t sResolveN = 0;
-    if ((sResolveN++ % 125u) == 0u) g_consoleCls = D::ConsoleClassPtr();
+    if ((sResolveN++ % 125u) == 0u) g_consoleCls = D::ClassPtr();
 }
 
 void Tick(coop::net::Session& session) {
