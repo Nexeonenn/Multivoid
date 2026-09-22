@@ -8,9 +8,10 @@
 // peers' games produce their own, and an intent for each would double the world.
 //
 // So the client's drop-intent lane could not admit a birth by its CLASS -- it kept a four-lineage
-// whitelist instead, which the spawn menu, an arbitrary catalog, can never be on
-// (docs/CLIENT_SPAWN_ARC.md). The discriminator is not what was born but WHO ASKED. This module
-// answers that, and only that; the lane decides what to do with the answer.
+// whitelist instead, which the spawn menu, an arbitrary catalog, can never be on. The
+// discriminator is not what was born but WHO ASKED -- docs/coop-entity-expression-map.md, "Who
+// asked, for a client's fresh birth". This module answers that, and only that; the lane decides
+// what to do with the answer.
 //
 // The two player spawn verbs in the cook, both read from bytecode on the shipped pak:
 //

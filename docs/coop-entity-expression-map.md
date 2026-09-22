@@ -85,7 +85,6 @@ are peer-gated. `[V]`
   own spawns and so names itself in the native seam's caller frame. The mark rides the pending
   entry to the drain and crosses as an ordinary drop intent -- not a fresh birth, which would
   sleep the host's copy, while a menu prop must fall on the host as it falls here. `[V]`
-  (`docs/CLIENT_SPAWN_ARC.md`)
 - **The prop's own save record, beside its birth.** A class that keeps save state of its own --
   a reel's progress, a disc's files -- has that state serialized by the game's own `getData` and
   carried on its own message, addressed by Key and sent behind the spawn row on the same lane, so
