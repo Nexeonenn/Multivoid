@@ -10,6 +10,7 @@
 
 #include "imgui.h"
 
+#include <algorithm>
 #include <atomic>
 #include <cstdio>
 #include <mutex>
@@ -27,13 +28,17 @@ namespace GT = ue_wrap::game_thread;
 // What the render paints: the rules already joined to the game's layout, every value already text.
 // Built on the game thread once per snapshot, so a frame only draws.
 struct ViewRow {
+    std::string key;             // the rule's struct member name: unique, so it keys the selection
     std::string label;
     std::string value;
-    std::string tooltip;   // the game's description, then what its menu asks before an edit
+    std::string description;     // what the game's own description pane would say for this row
     bool        on = false;      // a checkbox rule that is set: drawn in the "on" colour
     bool        isCheck = false;
-    bool        greyed = false;  // drawn as the game's menu greys a row: locked for this player, or
-                                 // switched off by another rule
+    bool        greyed = false;  // the row is not editable in the game's menu: locked for this
+                                 // player, or switched off by another rule
+    bool        locked = false;  // ...and the reason is a lock. The game shows exactly ONE of two
+                                 // overlay images: img_locked (red) when the rule is locked, and
+                                 // img_disabled (white) when it is merely switched off.
 };
 struct ViewCategory {
     std::string          name;
@@ -64,6 +69,7 @@ GR::Kind KindOf(GP::Control c) {
 
 ViewRow MakeRow(const GR::RuleField& f, const GP::Row* row, const GP::LockInputs& lock) {
     ViewRow out;
+    out.key = f.key;
     out.label = (row && !row->label.empty()) ? row->label : f.label;
     char buf[32];
     switch (f.kind) {
@@ -82,19 +88,24 @@ ViewRow MakeRow(const GR::RuleField& f, const GP::Row* row, const GP::LockInputs
             break;
     }
     if (!row) return out;
-    if (row->description.size() > 1) out.tooltip = row->description;  // the game writes "-" for none
+    if (row->description.size() > 1) out.description = row->description;  // the game writes "-" for none
     // Locked as the game's menu locks it for THIS player: a lock is about who may edit the rule in
-    // the menu, and the value shown is in force either way.
+    // the menu, and the value shown is in force either way. On a locked row the game's own
+    // uicomp_gameRuleSlot::getTexts REPLACES the description with the lock message, so this does
+    // too, in the game's wording; the achievement list carries its [O]/[X] held marker.
     if (!GP::IsUnlocked(*row, lock)) {
+        out.locked = true;
         out.greyed = true;
-        out.tooltip += (out.tooltip.empty() ? "" : "\n\n");
         if (row->unlockAchievements.empty()) {
             std::snprintf(buf, sizeof(buf), "%d", row->unlockDay);
-            out.tooltip += std::string("Locked in the game's menu for you: play past day ") + buf + " to unlock it.";
+            out.description = std::string("This rule is day-locked!\nUnlock this rule by playing past day ") + buf;
         } else {
-            out.tooltip += "Locked in the game's menu for you: it takes the achievement";
-            for (const std::string& a : row->unlockAchievements) out.tooltip += " '" + a + "'";
-            out.tooltip += ".";
+            out.description = "This rule is achievement-locked!\nUnlock this rule by getting following achievements:";
+            for (const std::string& a : row->unlockAchievements) {
+                const bool held = std::find(lock.achievements.begin(), lock.achievements.end(), a) !=
+                                  lock.achievements.end();
+                out.description += "\n- " + a + (held ? " [O]" : " [X]");
+            }
         }
     }
     return out;
@@ -141,7 +152,9 @@ void BuildAndPublish() {
                 vc.rows.push_back(MakeRow(*f, &row, lock));
                 if (f->key == "permanentSeason" && !permanentSeasonOn) vc.rows.back().greyed = true;
             }
-            if (!vc.rows.empty()) view.categories.push_back(std::move(vc));
+            // A category the game collapses is not shown at all; one it shows is shown even with no
+            // rows in it, which is how its own pane renders "Challenges".
+            if (!cat.hidden) view.categories.push_back(std::move(vc));
         }
         // Rules the game's pane does not place: all of them when its layout could not be read, and
         // any rule a game update adds before its pane does.
@@ -225,30 +238,63 @@ void Render() {
     }
     ImGui::Separator();
 
-    ImGui::BeginChild("##world_rules_scroll", ImVec2(0, 0));  // the rest of the pane: one scrollbar
+    // The rule clicked last, by its struct member key: the game's pane describes one rule at a time.
+    // Keyed by the rule, not by a position, so a re-snapshot cannot move the selection onto another
+    // rule, and not by the label, which two rules could in principle share; the description is
+    // re-read from the live view every frame.
+    static std::string s_selected;  // render thread only
+    const ViewRow*     selected = nullptr;
+    for (const ViewCategory& cat : s_view.categories) {
+        for (const ViewRow& row : cat.rows) {
+            if (row.key == s_selected) { selected = &row; break; }
+        }
+        if (selected) break;
+    }
+
+    // The list scrolls; the description pane below it stays put, as the game's does.
+    const float paneHeight = S(96.f);
+    ImGui::BeginChild("##world_rules_scroll", ImVec2(0, -paneHeight));
     for (const ViewCategory& cat : s_view.categories) {
         if (!ImGui::CollapsingHeader(cat.name.c_str(), ImGuiTreeNodeFlags_DefaultOpen)) continue;
+        if (cat.rows.empty()) continue;  // a category the game shows with nothing in it: header only
         if (!ImGui::BeginTable(cat.name.c_str(), 2, ImGuiTableFlags_RowBg | ImGuiTableFlags_PadOuterX)) continue;
         ImGui::TableSetupColumn("Rule", ImGuiTableColumnFlags_WidthStretch);
         ImGui::TableSetupColumn("Value", ImGuiTableColumnFlags_WidthFixed, S(96.f));
         for (const ViewRow& row : cat.rows) {
             ImGui::TableNextRow();
-            ImGui::TableSetColumnIndex(0);
-            if (row.greyed) ImGui::TextDisabled("%s", row.label.c_str());
-            else            ImGui::TextUnformatted(row.label.c_str());
-            if (!row.tooltip.empty() && ImGui::IsItemHovered()) {
-                ImGui::BeginTooltip();
-                ImGui::PushTextWrapPos(S(360.f));
-                ImGui::TextUnformatted(row.tooltip.c_str());
-                ImGui::PopTextWrapPos();
-                ImGui::EndTooltip();
+            // The game lays one overlay image over the row, and only one: img_locked's red when the
+            // rule is locked, img_disabled's white when it is merely switched off, each at a tenth
+            // alpha. RowBg1 is the target that draws OVER the row background; RowBg0 would replace
+            // the striping instead of washing it.
+            if (row.greyed) {
+                const ImVec4 wash = row.locked ? ImVec4(1.f, 0.f, 0.f, 0.10f) : ImVec4(1.f, 1.f, 1.f, 0.10f);
+                ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg1, ImGui::GetColorU32(wash));
             }
+            ImGui::TableSetColumnIndex(0);
+            if (row.greyed) ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+            // SpanAllColumns, so the whole row is the click target the game's own row is.
+            if (ImGui::Selectable(row.label.c_str(), s_selected == row.key, ImGuiSelectableFlags_SpanAllColumns))
+                s_selected = row.key;
+            if (row.greyed) ImGui::PopStyleColor();
             ImGui::TableSetColumnIndex(1);
             if (row.isCheck && row.on && !row.greyed) ImGui::TextColored(ImVec4(0.55f, 0.85f, 0.55f, 1.f), "%s", row.value.c_str());
             else if (row.isCheck || row.greyed)        ImGui::TextDisabled("%s", row.value.c_str());
             else                        ImGui::TextUnformatted(row.value.c_str());
         }
         ImGui::EndTable();
+    }
+    ImGui::EndChild();
+
+    ImGui::Separator();
+    ImGui::BeginChild("##world_rules_desc", ImVec2(0, 0));
+    if (!selected) {
+        ImGui::TextDisabled("Click on the name of the rule to see its description.");
+    } else {
+        ImGui::TextUnformatted(selected->label.c_str());
+        ImGui::PushTextWrapPos(0.f);
+        if (selected->description.empty()) ImGui::TextDisabled("(no description)");
+        else                               ImGui::TextUnformatted(selected->description.c_str());
+        ImGui::PopTextWrapPos();
     }
     ImGui::EndChild();
 }
