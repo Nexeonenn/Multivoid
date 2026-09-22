@@ -56,6 +56,15 @@ struct MainPlayerGrabState {
 
 bool ReadMainPlayerGrabState(void* mainPlayer, MainPlayerGrabState& out);
 
+// AmainPlayer_C::hitResult's actor -- the RAW interaction trace, the field the game's own tool
+// bodies break when they decide what a press is on. It is not the same answer as lookAtActor
+// below: that one is derived from this trace later in the tick and is skipped while a grab is
+// open or the trace did not block, so it can be stale or null while this still names the thing in
+// front of the player. A gate that has to agree with a Blueprint body reads THIS one. Null when
+// the trace hit nothing, when the weak pointer's slot has been recycled, or while it is
+// unresolved. Reflection-resolved, offsets cached. Game thread.
+void* ReadMainPlayerHitActor(void* mainPlayer);
+
 // AmainPlayer_C::lookAtActor, the interactable under the crosshair; nullptr if unresolved or
 // nothing is aimed at. Reflection-resolved. Game thread.
 void* ReadMainPlayerLookAtActor(void* mainPlayer);

@@ -34,9 +34,13 @@ int32_t g_bagsOff = -1;
 
 }  // namespace
 
-bool IsFold(void* obj) { return IsOfClass(obj, Cached(g_foldCls, L"prop_garbBagFold_C")); }
+void* FoldClass() { return Cached(g_foldCls, L"prop_garbBagFold_C"); }
 
-bool IsRoll(void* obj) { return IsOfClass(obj, Cached(g_rollCls, L"prop_garbBagRoll_C")); }
+void* RollClass() { return Cached(g_rollCls, L"prop_garbBagRoll_C"); }
+
+bool IsFold(void* obj) { return IsOfClass(obj, FoldClass()); }
+
+bool IsRoll(void* obj) { return IsOfClass(obj, RollClass()); }
 
 void* FilledClass() { return Cached(g_filledCls, L"prop_garbageBag_C"); }
 

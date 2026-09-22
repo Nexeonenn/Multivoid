@@ -7,6 +7,7 @@
 #include "coop/element/registry.h"
 #include "coop/net/protocol.h"
 #include "coop/net/session.h"
+#include "coop/player/hand_item.h"
 #include "coop/player/players_registry.h"
 #include "coop/player/remote_player.h"
 #include "coop/props/active_drive.h"
@@ -28,6 +29,7 @@
 #include <atomic>
 #include <cstdint>
 #include <deque>
+#include <iterator>
 #include <unordered_map>
 #include <vector>
 
@@ -61,6 +63,10 @@ constexpr uint64_t kRemedyDebounceMs = 5000;
 std::atomic<coop::net::Session*> g_session{nullptr};
 bool g_watchInstalled = false;
 bool g_watchLive = false;
+// The two tool classes, produced by Install under its throttle and only COMPARED in the callback.
+// Null until the world holds one: the bags are ordinary props, so a base map may well not.
+void* g_foldCls = nullptr;
+void* g_rollCls = nullptr;
 
 // ---- client side -----------------------------------------------------------------------------
 // The tools this peer's own presses spent, consumed from Tick rather than inside the gate
@@ -103,6 +109,10 @@ void RemedyOnce(void* actor, coop::element::ElementId eid) {
     const uint64_t now = coop::active_drive::NowMs();
     auto it = g_remedyAtMs.find(eid);
     if (it != g_remedyAtMs.end() && now - it->second < kRemedyDebounceMs) return;
+    // Drop what the window has passed, so the debounce ledger stays the size of what is actually
+    // being refused rather than of every id ever refused this session.
+    for (auto e = g_remedyAtMs.begin(); e != g_remedyAtMs.end();)
+        e = (now - e->second >= kRemedyDebounceMs) ? g_remedyAtMs.erase(e) : std::next(e);
     g_remedyAtMs[eid] = now;
     coop::prop_snapshot::ExpressIncrementalSpawn(actor);
 }
@@ -152,6 +162,21 @@ void Execute(coop::net::Session& s, const coop::net::PackTrashIntentPayload& p, 
     if (!puppet || !puppet->valid() || !puppet->GetActor()) {
         ++g_denied;
         UE_LOGI("[PACK-TRASH] DENY eid=%u slot=%u -- no live body", eid, static_cast<unsigned>(slot));
+        return;
+    }
+    // The TOOL, on this machine. The game's own gate on a pack is that the body belongs to a bag in
+    // the presser's hand, and cancelling that body on the client took the gate with it: without this
+    // a sender with empty hands could name a pile and have the host bag it, at the token rate, for
+    // nothing. The host asks its own mirror of that peer's hand, the way it asks for a broom before
+    // running a client's stroke. The tool is still SPENT by the client -- that half is per-peer
+    // state -- but whether one is held is a question the host answers here.
+    void* const held = coop::hand_item::MirrorActorForSlot(slot);
+    const bool holdsTool = p.toolKind == 1 ? ue_wrap::garbage_bag::IsRoll(held)
+                                           : ue_wrap::garbage_bag::IsFold(held);
+    if (!holdsTool) {
+        ++g_denied;
+        UE_LOGI("[PACK-TRASH] DENY eid=%u slot=%u -- the sender holds no %s here", eid,
+                static_cast<unsigned>(slot), p.toolKind == 1 ? "bag roll" : "folded bag");
         return;
     }
     const auto token = coop::element::IntentTarget::ForClientIntent(s, slot, kPackReachUU);
@@ -213,10 +238,15 @@ void Execute(coop::net::Session& s, const coop::net::PackTrashIntentPayload& p, 
 sg::Verdict OnHandUsePre(const sg::Call& call) {
     auto* s = g_session.load(std::memory_order_acquire);
     if (!s || !s->connected() || s->role() != coop::net::Role::Client) return sg::Verdict::Run;
-    // The class gate: every hand-usable tool declares this verb, so without it a knife swing would
-    // enter here. The classes are resolved by the tests themselves and cached.
-    const bool isFold = ue_wrap::garbage_bag::IsFold(call.object);
-    const bool isRoll = !isFold && ue_wrap::garbage_bag::IsRoll(call.object);
+    // The class gate: every hand-usable tool declares this verb -- 146 classes do -- so without it a
+    // knife swing would enter here. COMPARE only: the two classes are PRODUCED by Install, under its
+    // throttle. Resolving them here would call FindClass on every left click of every one of those
+    // classes, and a FindClass miss is not memoised, so in a world holding no bag each click would
+    // pay two full object-array walks. That is the coin gun's defect exactly.
+    if (!call.object || (!g_foldCls && !g_rollCls)) return sg::Verdict::Run;
+    void* const cls = R::ClassOf(call.object);
+    const bool isFold = g_foldCls && cls == g_foldCls;
+    const bool isRoll = !isFold && g_rollCls && cls == g_rollCls;
     if (!isFold && !isRoll) return sg::Verdict::Run;
 
     static void*   sFn = nullptr;
@@ -229,9 +259,12 @@ sg::Verdict OnHandUsePre(const sg::Call& call) {
     void* player = *reinterpret_cast<void**>(call.locals + sPlayerOff);
     if (!player) return sg::Verdict::Run;
 
-    // What the tool's own body would bag: the game's look-at trace, which is occlusion-correct and
-    // honours the per-prop interaction flags.
-    void* aimed = E::ReadMainPlayerLookAtActor(player);
+    // What the tool's own body would bag: the RAW interaction trace it breaks itself, not the
+    // look-at actor derived from it later in the tick. The derived one is skipped while a grab is
+    // open or the trace did not block, so a press whose trace named the pile could read as naming
+    // nothing here -- and this body running locally is exactly the divergence the lane exists to
+    // prevent: a bag on this screen and a pile still standing on every other.
+    void* aimed = E::ReadMainPlayerHitActor(player);
     const bool isPile = ue_wrap::prop::IsChipPile(aimed);
     const bool isClump = isFold && ue_wrap::prop::IsGarbageClump(aimed);
     if (!isPile && !isClump) return sg::Verdict::Run;  // the tool's other uses stay the game's
@@ -288,6 +321,13 @@ void Install(coop::net::Session* session) {
     g_session.store(session, std::memory_order_release);
     if (!g_watchInstalled)
         g_watchInstalled = sg::WatchName(kHandUseVerb, kTagPackTrash, &OnHandUsePre, nullptr);
+    // Install is the per-tick retry pump and a FindClass miss is not memoised, so the resolve of a
+    // class the world may not hold is bound to about 1 Hz, the coin gun's shape.
+    if (g_foldCls && g_rollCls) return;
+    static uint32_t sResolveN = 0;
+    if ((sResolveN++ % 125u) != 0u) return;
+    if (!g_foldCls) g_foldCls = ue_wrap::garbage_bag::FoldClass();
+    if (!g_rollCls) g_rollCls = ue_wrap::garbage_bag::RollClass();
 }
 
 void Tick(coop::net::Session& session) {

@@ -16,6 +16,7 @@
 #include "ue_wrap/core/reflected_offset.h"
 
 #include <cstdint>
+#include <cstring>
 #include <vector>
 
 namespace ue_wrap::engine {
@@ -292,6 +293,31 @@ bool ReadMainPlayerGrabState(void* mainPlayer, MainPlayerGrabState& out) {
     if (heavyOff >= 0)      out.heavy      = *reinterpret_cast<bool*>(base + heavyOff);
     if (grabLenOff >= 0)    out.grabLen    = *reinterpret_cast<float*>(base + grabLenOff);
     return true;
+}
+
+void* ReadMainPlayerHitActor(void* mainPlayer) {
+    if (!mainPlayer || !R::IsLive(mainPlayer)) return nullptr;
+    // Two offsets, resolved once: hitResult on the player, then the actor inside FHitResult. The
+    // engine holds that actor as a TWeakObjectPtr -- a slot and a serial -- so it is resolved
+    // through the object array rather than dereferenced, and a recycled slot answers null.
+    static void*   sCls = nullptr;
+    static int32_t sHitOff = -1;
+    static int32_t sActorOff = -1;
+    void* cls = R::ClassOf(mainPlayer);
+    if (!cls) return nullptr;
+    if (cls != sCls) {
+        sCls = cls;
+        sHitOff = R::FindPropertyOffset(cls, L"hitResult");
+        sActorOff = -1;
+        if (void* inner = R::PropertyInnerStruct(cls, L"hitResult"))
+            sActorOff = R::FindPropertyOffset(inner, L"Actor");
+    }
+    if (sHitOff < 0 || sActorOff < 0) return nullptr;
+    const uint8_t* weak = reinterpret_cast<const uint8_t*>(mainPlayer) + sHitOff + sActorOff;
+    int32_t idx = 0, serial = 0;
+    std::memcpy(&idx, weak, sizeof(idx));
+    std::memcpy(&serial, weak + sizeof(idx), sizeof(serial));
+    return R::ResolveWeakObject(idx, serial);
 }
 
 void* ReadMainPlayerLookAtActor(void* mainPlayer) {

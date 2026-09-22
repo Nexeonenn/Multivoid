@@ -15,9 +15,15 @@
 
 namespace ue_wrap::garbage_bag {
 
-// The two tools, each answering for its class or a subclass. A class that is not loaded costs a
-// full object walk per call (a FindClass hit is memoised, a miss is not), so these are written for
-// once-per-press call sites, not for a per-frame poll. Game thread.
+// The two tools' classes, for a consumer that gates a hot callback on them: produce the class in
+// an installer, on a throttle, and COMPARE in the callback. Null until the class is loaded, and a
+// FindClass miss is not memoised, so a caller that asks per press pays a full object walk per press
+// in every world that holds no bag. Game thread.
+void* FoldClass();
+void* RollClass();
+
+// The same test, for a call site that runs once per press and not per dispatch of a shared verb.
+// Each answers for its class or a subclass. Game thread.
 bool IsFold(void* obj);
 bool IsRoll(void* obj);
 
