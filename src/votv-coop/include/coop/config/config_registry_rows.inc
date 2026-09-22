@@ -350,7 +350,7 @@ CFG_FLAG(native_pile_inert_probe, "native_pile_inert_probe", "dev", false, nullp
     "Diagnostic probe: native pile inertness on clients.")
 CFG_FLAG(spawn_order_probe, "spawn_order_probe", "dev", false, nullptr,
     "Diagnostic probe: actor spawn ordering.")
-CFG_FLAG(prop_birth_key_probe, "prop_birth_key_probe", "dev", false, nullptr,
+CFG_FLAG(prop_birth_key_probe, "prop_birth_key_probe", "dev", false, "VOTVCOOP_PROP_BIRTH_KEY_PROBE",
     "Diagnostic probe (CLIENT): the place/birth seam -- how many drain ticks the save Key takes to "
     "restore after a spawn, and which of the seven drain exits each pending spawn leaves by. Set it "
     "on the CLIENT; the host places through a different path.")
