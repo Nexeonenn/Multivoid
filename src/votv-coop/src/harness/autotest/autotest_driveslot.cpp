@@ -9,13 +9,20 @@
 // drive not frozen, and carried off the port by the client's poses. A slot freezes the drive it
 // takes, so an eject that crosses without the grab's unfreeze leaves the host's copy frozen in the
 // port, where the prop lane drops every pose of the carry.
+//
+// Every wait here is on a state one of the peers reaches: the client's world coming up, the drive
+// standing frozen in the port, the far copy leaving it, the dropped drive coming to rest. The
+// carry itself is the one timed thing, because a carry is a movement over time.
 
 #include "harness/autotest/driveslot.h"
 
 #include "harness/autotest.h"  // IsClientRole
 
 #include "coop/element/registry.h"
+#include "coop/net/session.h"                // IsSlotWorldReady: the host's half of the shared origin
 #include "coop/player/players_registry.h"
+#include "coop/session/net_pump.h"           // HasAnnouncedWorldReady: the client's half
+#include "harness/session_runtime.h"         // Session()
 #include "ue_wrap/actors/prop.h"
 #include "ue_wrap/core/call.h"
 #include "ue_wrap/core/game_thread.h"
@@ -63,6 +70,23 @@ bool WaitFor(int ms, Pred pred) {
     return false;
 }
 
+// The shared origin both peers wait on, the broom drill's: the client's world coming up, which the
+// client announces and the host learns as that slot going world-ready. A run reaches it when it
+// reaches it -- a fixed wait here measured nothing when the load ran long and burned the rest of
+// the window when it did not.
+bool WaitForPeerWorld(const char* who) {
+    const bool isClient = IsClientRole();
+    UE_LOGI("driveslot: %hs -- waiting for the client's world", who);
+    for (int i = 0; i < 1800; ++i) {
+        const bool ready = isClient ? coop::net_pump::HasAnnouncedWorldReady()
+                                    : harness::session_runtime::Session().IsSlotWorldReady(1);
+        if (ready) return true;
+        ::Sleep(100);
+    }
+    UE_LOGW("driveslot: %hs never saw the client's world -- aborting", who);
+    return false;
+}
+
 uint32_t EidOf(void* actor) {
     return static_cast<uint32_t>(coop::element::Registry::Get().EidForActor(actor));
 }
@@ -89,8 +113,7 @@ struct Subject {
 };
 
 void RunHost() {
-    UE_LOGI("driveslot: HOST -- waiting 75s for the client's world, then a drive into the play slot");
-    ::Sleep(75000);
+    if (!WaitForPeerWorld("HOST")) return;
     auto sb = std::make_shared<Subject>();
     if (RunGT([sb](std::atomic<int>& d) {
             if (!DC::EnsureResolved()) { UE_LOGW("driveslot: drive chain unresolved"); d.store(2); return; }
@@ -114,7 +137,8 @@ void RunHost() {
         UE_LOGW("driveslot: VERDICT host FAIL -- could not set up the drive");
         return;
     }
-    ::Sleep(3000);  // the birth reaches the client before the insert does
+    // Straight into the port: an insert that overtakes its drive's birth is parked by the receiver
+    // (drive_sync's pending list, retried until the eid resolves), so the order needs no wait here.
     RunGT([sb](std::atomic<int>& d) {
         DC::CallPutDriveIn(sb->slot, sb->drive);
         sb->eid = EidOf(sb->drive);
@@ -130,8 +154,15 @@ void RunHost() {
         UE_LOGW("driveslot: VERDICT host FAIL -- the client's eject never reached the host");
         return;
     }
-    UE_LOGI("driveslot: HOST's slot is empty -- waiting out the client's carry and drop");
-    ::Sleep(9000);
+    // The evidence, not a clock: the copy here is unfrozen and has left the port under the client's
+    // poses. It ends the moment both hold -- mid-carry is already proof the poses drove it -- and
+    // the readout below reports whatever is true when the wait returns, pass or timeout.
+    UE_LOGI("driveslot: HOST's slot is empty -- watching for the carry to move this copy");
+    WaitFor(30000, [sb] {
+        if (!R::IsLiveByIndex(sb->drive, sb->driveIdx)) return false;
+        if (ue_wrap::prop::IsFrozen(sb->drive)) return false;
+        return Distance(E::GetActorLocation(sb->drive), sb->port) >= kOffPortCm;
+    });
     RunGT([sb](std::atomic<int>& d) {
         const bool live = R::IsLiveByIndex(sb->drive, sb->driveIdx);
         const bool empty = DC::SlotDrive(sb->slot) == nullptr;
@@ -148,19 +179,22 @@ void RunHost() {
 }
 
 void RunClient() {
-    UE_LOGI("driveslot: CLIENT -- waiting for the host's drive in the play slot");
+    if (!WaitForPeerWorld("CLIENT")) return;
+    // Frozen, not merely present: the slot freezes what it takes, so the drive being in the port AND
+    // frozen here is this peer saying the whole insert has landed. Without the freeze the grab below
+    // would test nothing -- the unfreeze under test would have nothing to undo.
+    UE_LOGI("driveslot: CLIENT -- waiting for the host's drive to be frozen in the play slot");
     auto sb = std::make_shared<Subject>();
     const bool in = WaitFor(180000, [sb] {
         if (!DC::EnsureResolved()) return false;
         sb->slot = DC::SlotActor(DC::kRoleDeskPlay);
         sb->drive = sb->slot ? DC::SlotDrive(sb->slot) : nullptr;
-        return sb->drive != nullptr;
+        return sb->drive != nullptr && ue_wrap::prop::IsFrozen(sb->drive);
     });
     if (!in) {
-        UE_LOGW("driveslot: VERDICT client FAIL -- no drive reached the play slot");
+        UE_LOGW("driveslot: VERDICT client FAIL -- no drive reached the play slot frozen");
         return;
     }
-    ::Sleep(2000);
 
     struct Grab {
         void* player = nullptr;
@@ -227,7 +261,15 @@ void RunClient() {
         E::WriteMainPlayerGrabbingPair(g->player, nullptr, nullptr);
         d.store(1);
     });
-    ::Sleep(4000);
+    // Let it come to rest, measured rather than waited out: two samples a quarter second apart
+    // within a centimetre of each other is the drop settling. The readout follows either way.
+    ue_wrap::FVector last{};
+    WaitFor(15000, [sb, &last] {
+        const ue_wrap::FVector at = E::GetActorLocation(sb->drive);
+        const bool still = Distance(at, last) < 1.f;
+        last = at;
+        return still;
+    });
     RunGT([sb](std::atomic<int>& d) {
         const ue_wrap::FVector at = E::GetActorLocation(sb->drive);
         UE_LOGI("driveslot: VERDICT client DONE -- eid=%u slotEmpty=%d frozen=%d at (%.0f,%.0f,%.0f), "
