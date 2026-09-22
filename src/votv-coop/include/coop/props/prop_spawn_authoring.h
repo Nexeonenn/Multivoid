@@ -1,36 +1,20 @@
 // coop/props/prop_spawn_authoring.h -- did a PLAYER author this prop birth, or did the game?
 //
-// ONE concept, and it is the fact the client's birth seam was missing. A client's world produces
-// keyed props constantly without anyone asking: mushroom and birch spawners, a dirthole, a
-// lightning strike, an impact component breaking something, lib_C::replaceProp morphing one prop
-// into another -- every one of them resolves the same catalog and finishes the same
-// GameplayStatics spawn as the sandbox spawn menu does. They must NOT cross to the host: the other
-// peers' games produce their own, and an intent for each would double the world.
-//
-// So the client's drop-intent lane could not admit a birth by its CLASS -- it kept a four-lineage
-// whitelist instead, which the spawn menu, an arbitrary catalog, can never be on. The
-// discriminator is not what was born but WHO ASKED -- docs/coop-entity-expression-map.md, "Who
-// asked, for a client's fresh birth". This module answers that, and only that; the lane decides
-// what to do with the answer.
-//
-// The two player spawn verbs in the cook, both read from bytecode on the shipped pak:
-//
-//   * the spawn menu. A click on a catalog slot runs ui_spawnmenu_C::spawn(FName), which traces
-//     from the camera and calls gamemode->spawnPropThroughGamemode(row, transform, 1, out) --
-//     ui_spawnmenu::spawn[13]. That gamemode verb is where the deferred spawn and the finish live,
-//     but it is ALSO what replaceProp and the physics-impact component call, so the verb alone
-//     does not name a player. The caller does. A script-body gate watch on the gamemode verb
-//     reads the calling Blueprint frame the VM already built and opens a bracket only for the
-//     menu's own spawn().
-//
-//   * the toolgun. tool_spawn_C::init(toolgun) enters ExecuteUbergraph_tool_spawn, which carries
-//     its OWN copy of the three-branch spawn and finishes the actor itself -- it never goes
-//     through the gamemode verb. Its ubergraph holds no other FinishSpawningActor, so a prop
-//     finished while that body is the calling frame is a toolgun spawn by construction, and the
-//     native seam's caller frame names it with no watch at all.
-//
-// Gameplay layer (principle 7): it reaches the engine only through ue_wrap. Game thread only --
-// both the gate and the native seam hand their callbacks the VM's live frame.
+// A client's world mints keyed props constantly with nobody asking: spawners, a dirthole, a
+// lightning strike, an impact, lib_C::replaceProp. Each resolves the same catalog and finishes the
+// same GameplayStatics spawn the sandbox spawn menu does, and none may cross -- every peer's game
+// makes its own, so an intent per birth would double the world. So the drop-intent lane cannot
+// admit by CLASS; the discriminator is WHO ASKED. Background:
+// docs/coop-entity-expression-map.md, "Who asked, for a client's fresh birth".
+
+// The two player spawn verbs, read from bytecode on the shipped pak. The MENU: a catalog click
+// runs ui_spawnmenu_C::spawn, which calls gamemode->spawnPropThroughGamemode -- a verb replaceProp
+// and the impact component call too, so it is identified by its CALLER, through a script-body gate
+// watch. The TOOLGUN: tool_spawn_C::init enters ExecuteUbergraph_tool_spawn, which finishes its
+// own spawns and holds no other FinishSpawningActor, so the native seam's caller frame names it.
+
+// Gameplay layer (principle 7): reaches the engine only through ue_wrap. Game thread only -- the
+// gate and the native seam both hand their callbacks the VM's live frame.
 
 #pragma once
 

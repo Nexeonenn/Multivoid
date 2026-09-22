@@ -132,17 +132,14 @@ void OnClientFinishSpawn(void* /*context*/, void* /*srcObj*/, void* result) {
     // client's genuine place has no other delivery channel (the census express is host-only)
     // and the re-bracket sweep would doom it, so intent, host spawn, express, claim must flow.
     // The warning latch mirrors the destroy seam's.
-    //
-    // A PLAYER-AUTHORED birth is exempt from both gates. They are a PROXY for "this birth is
-    // loader churn", and authorship is the fact the proxy was standing in for -- so the proxy keeps
-    // its job for everything else and stops guessing about the one case that can now be told
-    // apart. The exemption is not an argument that a player cannot act here: the episode runs to
-    // load-tail quiescence, long after the player has a controller, and the spawn menu's widget is
-    // created during the world's own startup. It is that a player's deliberate creation is not
-    // churn whenever it happens, and has no second delivery if dropped -- the express is host-only,
-    // so a suppressed one is lost for the session rather than re-arriving. Measured in the run that
-    // closed this lane: the player's birth crossed while three churn births in the following second
-    // were still refused.
+
+    // A PLAYER-AUTHORED birth is exempt from both. They are a PROXY for "this is loader churn",
+    // and authorship is the fact the proxy stood in for, so the proxy keeps its job for everything
+    // else. Not an argument that a player cannot act here -- the episode runs to load-tail
+    // quiescence, long after the player has a controller. It is that a deliberate creation is
+    // never churn, and has no second delivery if dropped: the express is host-only, so a
+    // suppressed one is lost for the session. Measured: the player's birth crossed while three
+    // churn births in the following second were still refused.
     if (!playerAuthored) {
         if (coop::world_load_episode::InEpisode()) return;  // quiet during the join loadObjects churn
         if (coop::world_load_episode::InReconcileWindow() &&

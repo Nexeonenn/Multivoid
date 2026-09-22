@@ -335,13 +335,9 @@ DWORD WINAPI FloodProbeThread(LPVOID arg);
 void RunScriptGateDrill();
 DWORD WINAPI ScriptGateDrillThread(LPVOID arg);
 
-// The spawn-menu cross-peer drill (harness/autotest/autotest_menuspawn.cpp), both peers: the
-// CLIENT drives the spawn menu's own spawn(FName) -- the function a click on a catalog slot calls
-// -- on the game's first catalog row, and each peer diffs its own world for actors of that row.
-// The host's gain is the measurement: a client's menu spawn has to reach the host's world like any
-// other shared prop. Ends on `menuspawn: DONE role=<r> ... crossed=<0|1>` on both peers, the host's
-// after a bounded wait, since the negative is a result and not a hang. Env
-// VOTVCOOP_RUN_MENUSPAWN_DRILL=1.
+// The spawn-menu cross-peer drill, both peers: the client drives the menu's own spawn and the
+// host's world must gain the prop. Env VOTVCOOP_RUN_MENUSPAWN_DRILL=1; the arms and the verdict
+// line are described in harness/autotest/autotest_menuspawn.cpp.
 void RunMenuSpawnDrill();
 DWORD WINAPI MenuSpawnDrillThread(LPVOID arg);
 
