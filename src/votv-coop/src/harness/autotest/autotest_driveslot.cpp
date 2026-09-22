@@ -21,6 +21,7 @@
 #include "coop/element/registry.h"
 #include "coop/net/session.h"                // IsSlotWorldReady: the host's half of the shared origin
 #include "coop/player/players_registry.h"
+#include "coop/session/join_progress.h"      // the client's join being over, not just announced
 #include "coop/session/net_pump.h"           // HasAnnouncedWorldReady: the client's half
 #include "harness/session_runtime.h"         // Session()
 #include "ue_wrap/actors/prop.h"
@@ -50,6 +51,7 @@ namespace P  = ue_wrap::profile;
 
 constexpr float kCarryAsideCm = 150.f;  // how far the client carries the drive
 constexpr float kOffPortCm    = 75.f;   // the host's copy has left the port by at least this
+constexpr DWORD kReplayWindowMs = 10000;  // the host's connect replay to a fresh joiner
 
 // Run a game-thread closure and block until it stores into `done` (1 ok, 2 fail).
 template <class Fn>
@@ -78,9 +80,20 @@ bool WaitForPeerWorld(const char* who) {
     const bool isClient = IsClientRole();
     UE_LOGI("driveslot: %hs -- waiting for the client's world", who);
     for (int i = 0; i < 1800; ++i) {
-        const bool ready = isClient ? coop::net_pump::HasAnnouncedWorldReady()
+        // The client's own join being OVER, not merely announced: its phase returns to Idle when
+        // the host's snapshot has been applied and the cover is down. The host has no predicate for
+        // the other end of its own replay, so it waits out that window -- it is the one thing here
+        // that is not a state either peer publishes. Acting inside it loses: the replay's seed
+        // carries the slot as it was BEFORE the drill touched it, and it lands after the drill's
+        // own edges and puts the old drive back.
+        const bool ready = isClient ? (coop::net_pump::HasAnnouncedWorldReady() &&
+                                       coop::join_progress::CurrentPhase() ==
+                                           coop::join_progress::Phase::Idle)
                                     : harness::session_runtime::Session().IsSlotWorldReady(1);
-        if (ready) return true;
+        if (ready) {
+            if (!isClient) ::Sleep(kReplayWindowMs);
+            return true;
+        }
         ::Sleep(100);
     }
     UE_LOGW("driveslot: %hs never saw the client's world -- aborting", who);
@@ -119,12 +132,25 @@ void RunHost() {
             if (!DC::EnsureResolved()) { UE_LOGW("driveslot: drive chain unresolved"); d.store(2); return; }
             sb->slot = DC::SlotActor(DC::kRoleDeskPlay);
             if (!sb->slot) { UE_LOGW("driveslot: no desk play slot"); d.store(2); return; }
-            if (DC::SlotDrive(sb->slot)) { UE_LOGW("driveslot: the play slot is taken already"); d.store(2); return; }
+            // A save that already has a drive in the port would otherwise end the run here, and
+            // worse, the client's wait for "a frozen drive in the port" would be answered by THAT
+            // drive rather than by the insert under test. So the port is emptied first, the way a
+            // player empties it -- the drive's own eject, then the grab's unfreeze -- and the drive
+            // is left where it lies.
+            void* me = coop::players::Registry::Get().Local();
+            if (!me) { UE_LOGW("driveslot: no local player"); d.store(2); return; }
+            if (void* sitting = DC::SlotDrive(sb->slot)) {
+                CallWithPlayer(sitting, L"playerTryToGrab", me);
+                CallWithPlayer(sitting, L"playerGrabbed_pre", me);
+                UE_LOGI("driveslot: HOST cleared a drive the save left in the play slot (empty=%d)",
+                        DC::SlotDrive(sb->slot) == nullptr ? 1 : 0);
+                if (DC::SlotDrive(sb->slot)) {
+                    UE_LOGW("driveslot: the play slot is taken and did not clear"); d.store(2); return;
+                }
+            }
             // Born at the host's feet, away from the port: a drive born in the port's reach is taken
             // by the slot's own overlap on every peer, before the insert under test.
-            void* player = coop::players::Registry::Get().Local();
-            if (!player) { UE_LOGW("driveslot: no local player"); d.store(2); return; }
-            ue_wrap::FVector at = E::GetActorLocation(player);
+            ue_wrap::FVector at = E::GetActorLocation(me);
             at.Z += 100.f;
             void* drive = E::BeginDeferredSpawn(DC::DriveClass(), at, ue_wrap::FRotator{});
             if (!drive || !E::FinishDeferredSpawn(drive, at, ue_wrap::FRotator{})) {
@@ -137,8 +163,18 @@ void RunHost() {
         UE_LOGW("driveslot: VERDICT host FAIL -- could not set up the drive");
         return;
     }
-    // Straight into the port: an insert that overtakes its drive's birth is parked by the receiver
-    // (drive_sync's pending list, retried until the eid resolves), so the order needs no wait here.
+    // The fresh drive has to be an ENTITY before it goes in: a slot line names its drive by element
+    // id, and one sent for a drive that has not been enrolled yet names nothing the far peer can
+    // ever resolve. Enrolment happens on the tracker's own pass, a frame or two behind the spawn.
+    if (!WaitFor(15000, [sb] {
+            const uint32_t e = EidOf(sb->drive);
+            return e != 0u && e != static_cast<uint32_t>(coop::element::kInvalidId);
+        })) {
+        UE_LOGW("driveslot: VERDICT host FAIL -- the fresh drive never took an element id");
+        return;
+    }
+    // Straight into the port: an insert that overtakes its drive's birth broadcast is parked by the
+    // receiver (drive_sync's pending list, retried until the eid resolves), so no wait is owed here.
     RunGT([sb](std::atomic<int>& d) {
         DC::CallPutDriveIn(sb->slot, sb->drive);
         sb->eid = EidOf(sb->drive);
@@ -180,16 +216,25 @@ void RunHost() {
 
 void RunClient() {
     if (!WaitForPeerWorld("CLIENT")) return;
-    // Frozen, not merely present: the slot freezes what it takes, so the drive being in the port AND
-    // frozen here is this peer saying the whole insert has landed. Without the freeze the grab below
-    // would test nothing -- the unfreeze under test would have nothing to undo.
-    UE_LOGI("driveslot: CLIENT -- waiting for the host's drive to be frozen in the play slot");
+    // A DIFFERENT drive from whatever the save left in the port, frozen. Different, because the
+    // host empties the port and inserts a fresh drive, and the lane carries idempotent slot STATE
+    // rather than edges: the two moves land here as one line naming the new drive, so a peer
+    // watching for the port to go empty would wait forever. Frozen, because the slot freezes what
+    // it takes, and without that the grab below would have nothing to undo.
     auto sb = std::make_shared<Subject>();
-    const bool in = WaitFor(180000, [sb] {
+    void* before = nullptr;
+    RunGT([sb, &before](std::atomic<int>& d) {
+        if (DC::EnsureResolved()) sb->slot = DC::SlotActor(DC::kRoleDeskPlay);
+        before = sb->slot ? DC::SlotDrive(sb->slot) : nullptr;
+        d.store(1);
+    });
+    UE_LOGI("driveslot: CLIENT -- waiting for a fresh frozen drive in the play slot (the save left %p)",
+            before);
+    const bool in = WaitFor(180000, [sb, &before] {
         if (!DC::EnsureResolved()) return false;
-        sb->slot = DC::SlotActor(DC::kRoleDeskPlay);
+        if (!sb->slot) sb->slot = DC::SlotActor(DC::kRoleDeskPlay);
         sb->drive = sb->slot ? DC::SlotDrive(sb->slot) : nullptr;
-        return sb->drive != nullptr && ue_wrap::prop::IsFrozen(sb->drive);
+        return sb->drive != nullptr && sb->drive != before && ue_wrap::prop::IsFrozen(sb->drive);
     });
     if (!in) {
         UE_LOGW("driveslot: VERDICT client FAIL -- no drive reached the play slot frozen");
