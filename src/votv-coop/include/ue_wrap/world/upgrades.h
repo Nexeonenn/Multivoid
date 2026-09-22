@@ -38,6 +38,13 @@ bool IsLevelRow(int panelIndex);
 //   price  = price + accumulation * max(level - 1, 0)
 //   refund = max(floor(price(level) * 0.75) - 1, 1)
 int32_t PriceAtLevel(int panelIndex, int32_t level);
+
+// The row's UNACCUMULATED price, which is what the buy button tests the balance against before it
+// charges `PriceAtLevel`. The two differ from the second level up, and the game really does gate on
+// this one: a row bought at a high level can take the balance below zero, since nothing clamps it.
+// A host validating a client's purchase has to ask the same question the button asks, or a client
+// is refused a purchase the host can make standing at the same panel.
+int32_t BasePrice(int panelIndex);
 int32_t RefundAtLevel(int panelIndex, int32_t level);
 int32_t MaxLevel(int panelIndex);
 

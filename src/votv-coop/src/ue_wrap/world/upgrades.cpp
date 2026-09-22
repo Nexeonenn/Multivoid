@@ -35,8 +35,11 @@ struct Row {
 // exports rather than off a live widget, because the widget only exists while the laptop UI is up
 // and the HOST validating a client's purchase has no reason to have it open. The arithmetic they
 // feed is uicomp_upgradeSlot's own, transcribed from its bytecode:
-//   buy  when points >= price(level) and level < maxLevel; charges price, level += 1
-//   sell when level > 0;                                   credits refund, level -= 1
+//   buy  when points >= price and level < maxLevel; charges price(level), level += 1
+//   sell when level > 0;                            credits refund, level -= 1
+// The buy test really does read the row's unaccumulated `price` while the charge is getPrice(),
+// which accumulates -- nothing writes that member at runtime, and nothing clamps the balance, so
+// from the second level up the game lets a purchase take it below zero.
 //
 // Three members have no row: downloadFiltSize, serverStability and transofrmer are bought as
 // PHYSICAL upgrades in the world (prop_serverUpg, prop_transformerUpgrade), not on the panel.
@@ -156,6 +159,11 @@ int32_t PriceAtLevel(int panelIndex, int32_t level) {
     if (row < 0) return 0;
     const int32_t steps = level > 1 ? level - 1 : 0;
     return kRows[row].price + kRows[row].accum * steps;
+}
+
+int32_t BasePrice(int panelIndex) {
+    const int row = RowForPanelIndex(panelIndex);
+    return row < 0 ? 0 : kRows[row].price;
 }
 
 int32_t RefundAtLevel(int panelIndex, int32_t level) {

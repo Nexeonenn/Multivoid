@@ -142,7 +142,11 @@ void Execute(coop::net::Session& s, const coop::net::UpgradeIntentPayload& p, ui
     }
 
     if (buying) {
-        // The button's own two conditions, in its own order.
+        // The button's own two conditions, in its own order -- including the asymmetry it really
+        // has: the balance is tested against the row's UNACCUMULATED price and then charged the
+        // accumulated one, so from the second level up a purchase can take the group below zero.
+        // The host asks the button's question rather than a fairer one, or a client at the panel is
+        // refused a level the host could buy standing in the same place.
         const int32_t price = UP::PriceAtLevel(index, level);
         if (level >= UP::MaxLevel(index)) {
             ++g_denied;
@@ -150,10 +154,10 @@ void Execute(coop::net::Session& s, const coop::net::UpgradeIntentPayload& p, ui
                     static_cast<unsigned>(slot), index, UP::MaxLevel(index));
             return;
         }
-        if (points < price) {
+        if (points < UP::BasePrice(index)) {
             ++g_denied;
-            UE_LOGI("upgrade_sync: DENY slot=%u buy index=%d -- costs %d, the group has %d",
-                    static_cast<unsigned>(slot), index, price, points);
+            UE_LOGI("upgrade_sync: DENY slot=%u buy index=%d -- needs %d to press, the group has %d",
+                    static_cast<unsigned>(slot), index, UP::BasePrice(index), points);
             return;
         }
         if (!ue_wrap::economy::AddPoints(-price)) {

@@ -139,6 +139,20 @@ set the group's money to anything; it was retired whole rather than clamped
 (`coop/world/balance_sync`). A client's own earnings are therefore not shared unless a lane
 carries them as an intent.
 
+### The upgrades
+
+The eighteen upgrade levels are one struct on the save, so they used to ride only the transferred
+save and diverged in silence from the moment a level was bought. The host now polls the struct and
+broadcasts it whole on any change, which catches every writer: the panel, the physical racks, the
+transformer prop. A client applies what it is sent and repaints the rows it has open.
+
+A purchase is an intent. A client's button is refused at the script-body gate, so it never debits
+itself, and the host re-derives the price and the bounds from its own table and its own level,
+charges the shared balance and republishes. The rows have no identity of their own to name, so
+holding the laptop claim is the sender's reach, and the index must be one of the fifteen rows that
+buy a level. The host asks exactly what the button asks, including the game's own asymmetry: the
+balance is tested against the row's unaccumulated price and charged the accumulated one.
+
 ### The laptop's inbox
 
 The laptop's messages -- the hash-collection task mails, the scientist and alien replies, the
@@ -260,6 +274,7 @@ own re-take is touched and an ejecting peer behaves exactly as it does in single
 | a window, the grime | any peer, minimum wins | monotone decreases |
 | the drone | the host | a transform stream; the client's tick suppressed |
 | the balance | the host | one-way, absolute, on change |
+| the upgrade levels | the host | the struct whole, on change; a purchase is an intent |
 | an order | the client names the row; the host performs and prices | an intent |
 | a coin gun sale | the client names the prop; the host prices, mints and destroys | an intent ahead of the destroy |
 | a device's floppy slot | the host | a 1 Hz digest-gated poll; a peer claims the outcome of its own insert or eject, and the host's canonical is the answer |
@@ -274,6 +289,8 @@ own re-take is touched and an ejecting peer behaves exactly as it does in single
 | `DroneState` | the host to all | the drone's transform and flags |
 | `DroneFlyIntent` | a client to the host | the garage console whose call button it pressed |
 | `BalanceSync` | the host to all | the absolute balance |
+| `UpgradeLevels` | the host to all | the eighteen levels, whole |
+| `UpgradeIntent` | a client to the host | the panel row's index and whether it is a buy or a sell |
 | `OrderRequest`, `OrderRefused` | a client to the host; the host to one client | the items by row; a refusal and its reason |
 | `CoinGunSell`, `CoinGunResult`, `CoinCollect` | a client to the host; the host to one client; a client to the host | the sold prop's key; the outcome; a coin the client tripped |
 | `FloppySlotState` | a peer to the host with a claim; the host to all with the canonical | one device's slot, or a set of them: the type, the writes, the rows and the save JSON |
@@ -318,6 +335,6 @@ an error line.
 | the drone | `coop/interactables/drone_sync`, `coop/interactables/drone_call_intent`, `ue_wrap/devices/drone` |
 | the floppy slot | `coop/interactables/floppy_slot_sync`, `ue_wrap/devices/floppy_slot`, `ue_wrap/devices/serverbox`, `ue_wrap/devices/laptop` |
 | the inbox | `coop/world/email_sync`, `ue_wrap/world/email`, `coop/session/join_seed` |
-| the economy | `coop/world/balance_sync`, `coop/items/order_sync`, `coop/items/coingun_sync`, `ue_wrap/world/economy`, `ue_wrap/world/order_economy`, `ue_wrap/world/store_catalog` |
+| the economy | `coop/world/balance_sync`, `coop/items/order_sync`, `coop/items/coingun_sync`, `coop/interactables/upgrade_sync`, `ue_wrap/world/economy`, `ue_wrap/world/order_economy`, `ue_wrap/world/store_catalog`, `ue_wrap/world/upgrades` |
 | identity | `coop/element/portable_identity` |
 | tests and probes | `coop/dev/order_selftest`, `coop/dev/container_selftest`, `coop/dev/door_probe`, `coop/dev/lightswitch_probe`, `coop/dev/drone_probe`, `coop/dev/light_group_census`, `coop/dev/floppy_selftest` |
