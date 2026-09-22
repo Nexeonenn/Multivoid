@@ -162,6 +162,9 @@ bool Read(Pane& out) {
     if (!tree || !R::IsLive(tree)) return false;
     Walk(ObjectField(tree, L"RootWidget"), out, nullptr, 0);
     for (const Category& c : out.categories) if (!c.rows.empty()) out.valid = true;
+    // A walk that found categories but no rows is not a layout: an unusable pane hands back nothing,
+    // so no caller can read categories out of a Read() that answered false.
+    if (!out.valid) out.categories.clear();
     return out.valid;
 }
 
