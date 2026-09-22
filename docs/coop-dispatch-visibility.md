@@ -111,6 +111,8 @@ Never spawn from an observer directly; post it. `[V]`
 | a deferred spawn from a Blueprint graph (the pile morph, the wisp swarm, the pyramid's spawner) | `EX_CallMath` | not to the detour | the native seam, gated by the calling object's class `[V]` |
 | an event actor's self-destroy at its end | a self-call | no | the host's pose walk retires the dead actor `[V]` |
 | a finish-spawning from a native caller | reaches the detour | yes | the keyed sandbox-spawn seam `[V]` |
+| the spawn menu's own `ui_spawnmenu_C::spawn`, and the gamemode verb it calls | a widget delegate into `EX_Context` on the menu's `gamemode` variable, whose inner expression is `EX_LocalVirtualFunction spawnPropThroughGamemode` (measured on the shipped pak, `ui_spawnmenu.json` expr [13]) | the widget's yes, the gamemode verb's no | the script-body gate on `spawnPropThroughGamemode`. The verb alone does not name a player -- `lib_C::replaceProp` and `comp_physicsImpact` reach it too -- so the gate's PRE reads the CALLING frame and only the menu's own `spawn` counts, and the seam under the birth asks `IsBodyActive(verb, menuSpawn)` rather than keeping a counter of its own `[V]` |
+| the toolgun's spawn (`tool_spawn_C`) | `EX_CallMath` from `ExecuteUbergraph_tool_spawn`, which carries its own copy of the three catalog branches and never calls the gamemode verb | not to the detour; yes to the native seam | the caller frame the native seam already holds names the ubergraph, and it finishes nothing else `[V]` for the bytecode, `[?]` for a run |
 | a hook's constraint build (`SetConstrainedComponents`, from `attach_a` or `makeAttachments`) | a final call into a native, from the graph | not to the detour; yes to the native seam, on every route | a client breaks every hook tie there; the host keeps its own and builds a client's on its mirror `[V]` |
 | begin-play of a save-loaded actor | no dispatch the session sees | caught by the object scan at world start `[V]` |
 | begin-play of a runtime-spawned actor | maybe | unverified | probe before relying on it `[?]` |
@@ -186,7 +188,19 @@ The script-body gate publishes the innermost watched body for the calling thread
 own native-seam hooks firing inside a verb body can attribute a spawn or destroy to it. It is a
 project-wide namespace, and two readings of it are wrong: the "active" flag alone means any
 watched body on this thread, and the tag is a caller-chosen number unique only within its own
-consumer. The verb name is the identity. A consumer reading the call handed to its own callback
+consumer. The verb name is the identity.
+
+**A consumer asking "is MY verb running?" asks `IsBodyActive(function, callerFunction)`, never the
+innermost window and never a counter of its own.** The window names only the innermost watched
+body, so another consumer's watch firing in between hides the outer one; and a counter a consumer
+raises in its pre and lowers in its post is exact only while every pre gets a post, which is not
+guaranteed on two paths -- a fault the ProcessEvent firewall absorbs unwinds past the post-callback
+statements, and any consumer returning Cancel skips the posts for every watch on that call. Either
+leaves the counter raised for the life of the process, with the consumer believing its verb is
+running forever; for the spawn-menu lane that would have meant every ambient prop birth on that
+client crossing to the host as an intent. `IsBodyActive` walks the gate's own RAII scope chain
+instead, which unwinds on all three paths, and can match on the CALLER too, which is what tells a
+verb's player route from the same verb's ambient callers. `[V]` A consumer reading the call handed to its own callback
 is already scoped. And a context gate belongs in a hot ambient callback while a context resolve
 does not: a class resolve on a miss walks the whole object array on every click. `[V]`
 

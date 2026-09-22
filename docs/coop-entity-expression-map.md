@@ -69,10 +69,23 @@ are peer-gated. `[V]`
   is re-keyed with a fresh random key, once, and the game re-saves the live keys so the fix bakes
   into the host's save and every transferred world. A dead incumbent's recreate inherits its
   identity. Clients never re-key. `[V]`
-- **A client never authors a save-loaded prop.** Two intent doors route around it: the drop
-  intent for a parked key placed after a pickup, and the whitelisted births (a reel, a module, a
-  drive, a container extract) the client cannot avoid; the host performs both. Any other
-  client-born keyed prop is dropped at the door. `[V]`
+- **A client never authors a save-loaded prop.** Three intent doors route around it: the drop
+  intent for a parked key placed after a pickup, the whitelisted births (a reel, a module, a
+  drive, a container extract) the client cannot avoid, and a birth a PLAYER's own spawn verb
+  asked for; the host performs all three. Any other client-born keyed prop is dropped at the
+  door. `[V]`
+- **Who asked, for a client's fresh birth.** The third door cannot be a class list, because the
+  spawn menu is the whole catalog and every class on it is also what the world's own spawners,
+  morphs and impacts mint for themselves on each peer independently -- a class test would double
+  the world. So the birth is admitted on AUTHORSHIP, read at the seam where the VM still holds the
+  calling Blueprint frame and gone a tick later at the drain
+  (`coop/props/prop_spawn_authoring`). Two verbs: the spawn menu, identified by its CALLER, since
+  `ui_spawnmenu_C::spawn` and `lib_C::replaceProp` and the physics-impact component all reach the
+  same `mainGamemode_C::spawnPropThroughGamemode`; and the toolgun, whose ubergraph finishes its
+  own spawns and so names itself in the native seam's caller frame. The mark rides the pending
+  entry to the drain and crosses as an ordinary drop intent -- not a fresh birth, which would
+  sleep the host's copy, while a menu prop must fall on the host as it falls here. `[V]`
+  (`docs/CLIENT_SPAWN_ARC.md`)
 - **The prop's own save record, beside its birth.** A class that keeps save state of its own --
   a reel's progress, a disc's files -- has that state serialized by the game's own `getData` and
   carried on its own message, addressed by Key and sent behind the spawn row on the same lane, so
@@ -262,6 +275,7 @@ Every place two seams can express one actor, and what deduplicates it:
 | a joiner's save-loaded anchored hook and the host's replay of the same hook | the host mints the save key, and the joiner skips a key the game already resolves `[V]` |
 | a level-placed hook variant, which attaches itself on every peer | it is not in the lane's class table, and the owner's own field can never name it `[V]` |
 | a conversion's fresh prop and the generic spawn seams | the captured form is tracked and its broadcast suppressed `[V]` |
+| a client's menu-spawned prop and the host's copy of it, spawned from the intent | the client's own actor IS the mirror: the host sets the client's key, and the echo resolves it back to that actor and converges its pose instead of minting a second `[V]` |
 
 ## Needs a probe
 

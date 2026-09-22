@@ -74,8 +74,16 @@ performs (`coop/props/prop_drop_intent`):
 - **Births the client cannot avoid.** A reel ejected from a caddy, a module or a drive taken from
   a rack, an item extracted from a container all materialise on the client first; they go
   through the same door, class-checked at the host, born asleep where the class needs it.
+- **Births a player asked for.** The sandbox spawn menu and the toolgun. These cannot be named by
+  class -- the menu is the whole catalog, and the world's own spawners, morphs and impacts mint
+  those same classes per peer, so a class test would double the world. They are admitted on
+  AUTHORSHIP instead: the birth seam asks whether a player's own spawn verb is on the stack, which
+  is a fact only that instant holds, since the VM still has the calling Blueprint frame there
+  (`coop/props/prop_spawn_authoring`). Such a birth crosses as an ordinary drop intent and is NOT
+  slept on the host -- it was dropped at the player's aim and must fall there as it falls here.
 
-Any other keyed prop a client creates is dropped at that door and never reaches the host.
+Any other keyed prop a client creates is dropped at that door and never reaches the host: that is
+the world's own churn, which every peer produces for itself.
 
 ### The data row a prop carries
 
@@ -266,7 +274,7 @@ edge that reaches a joiner before the prop it names is kept until the prop resol
 | Limit | Evidence |
 |---|---|
 | Two peers grabbing the same prop both stream it; nothing assigns the prop to one holder, so receivers follow whichever stream is newest | `[V]` `coop/props/remote_prop` has no claim |
-| A keyed prop a client creates outside the intent door (a place after a pickup, the whitelisted births, a container extract) never reaches the host, and nothing logs it | `[V]` `coop/props/prop_drop_intent` drops it at the drain |
+| A keyed prop a client creates outside the intent door (a place after a pickup, the whitelisted births, a container extract, a player's own spawn verb) never reaches the host. It is logged now: the drain names its exit, and `[dev] prop_birth_key_probe` tallies every exit by name | `[V]` `coop/props/prop_drop_intent` drops it at the drain; `coop/dev/prop_birth_key_probe` |
 | Concrete, food and every other local-accumulator prop drift between peers; only the tape reel has its corrector | `[V]` `coop/interactables/tape_caddy_sync` is the only corrector |
 | The deployables other than the hook and the rope (nail gun, wall builder, explosives, fishing rod, physgun) are not synced; a nail or a wall placed by one peer reaches the others only through the save at their next join | `[V]` no lane under `coop/props` catches them |
 | A prop tied by any hook -- a player's, an anchored one, the level's own -- is parked on every client for as long as the tie holds, since the host streams it, so it cannot be grabbed there until the hook lets go | `[V]` `coop/items/hook_prop_claim` claims every tied prop on the host every pass; `coop/props/prop_drive_stream` parks it |
