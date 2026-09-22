@@ -24,6 +24,7 @@
 #include "ue_wrap/core/sdk_profile.h"
 #include "ue_wrap/engine/engine.h"
 #include "ue_wrap/engine/world_identity.h"
+#include "ue_wrap/world/game_mode.h"
 
 #include <windows.h>
 
@@ -465,7 +466,7 @@ void RunProbe() {
             auto ok   = std::make_shared<int>(0);
             GT::Post([done, ok, wslot] {
                 E::ResetCachedSave();
-                *ok = wslot.empty() ? (E::StartFreshGame(true) ? 1 : 0)
+                *ok = wslot.empty() ? (E::StartFreshGame(ue_wrap::game_mode::kStory) ? 1 : 0)
                                     : (E::LoadStorySave(wslot.c_str()) ? 1 : 0);
                 done->store(1);
             });

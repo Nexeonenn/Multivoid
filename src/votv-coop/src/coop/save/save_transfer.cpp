@@ -27,7 +27,7 @@
 #include "ue_wrap/actors/prop.h"        // IsChipPile: a grabbed clump belongs to the convert stream
 #include "ue_wrap/core/reflection.h"  // IsLive
 #include "ue_wrap/engine/save_capture.h"
-#include "ue_wrap/world/game_rules.h"  // the host's own mode, for the begin
+#include "ue_wrap/world/game_mode.h"   // the host's own mode, for the begin
 
 #include <windows.h>
 
@@ -118,8 +118,24 @@ HostStream g_host[coop::net::kMaxPeers];
 // (a failed send stops the pass) is the real pacer on a slower link.
 constexpr int kChunksPerTick = 4;
 
+// The mode byte the host announces. The header has no "unknown" encoding, so an unreadable mode
+// can only be sent as story -- but the GameInstance is immortal and the property is resolved by
+// name, so on a host serving a world the read is a substrate fault, not a state, and says so.
+uint8_t HostModeByte_(int slot) {
+    const int mode = ue_wrap::game_mode::ReadLocal();
+    if (!ue_wrap::game_mode::IsValid(mode)) {
+        UE_LOGE("save_transfer: slot %d -- the host's own game mode did not read (%d); "
+                "the joiner is told story", slot, mode);
+        return static_cast<uint8_t>(ue_wrap::game_mode::kStory);
+    }
+    UE_LOGI("save_transfer: slot %d -- the joiner loads in the host's mode %d (%s)", slot, mode,
+            ue_wrap::game_mode::NameOrOrdinal(mode).c_str());
+    return static_cast<uint8_t>(mode);
+}
+
 // A "no save" announce (zero bytes, zero chunks) as a pump stream, so TickHost delivers it with
-// retry; a backpressure-deleted one left the client waiting forever.
+// retry; a backpressure-deleted one left the client waiting forever. The mode rides it too: the
+// guest fresh-boots, and a fresh world of the host's mode is still the host's world.
 void ArmBeginNoSave_(int slot) {
     HostStream& hs = g_host[slot];
     hs = HostStream{};
@@ -128,6 +144,7 @@ void ArmBeginNoSave_(int slot) {
     hs.beginSent = false;
     hs.beginPayload = coop::net::SaveTransferBeginPayload{};
     hs.beginPayload.totalBytes = 0;
+    hs.beginPayload.gameMode = HostModeByte_(slot);
     hs.chunkCount = 0;
     UE_LOGW("save_transfer: no readable host save for slot %d -- client will fresh-boot", slot);
 }
@@ -150,17 +167,8 @@ void BeginStreamFromBlob_(int slot, HostStream& hs, std::vector<uint8_t>&& bytes
     hs.beginPayload.chunkCount = hs.chunkCount;
     hs.beginPayload.crc32 = crc;
     // The host's own mode, which the joiner's load forces: the slot's zcoop_ prefix names no mode.
-    // A hardcoded story here loaded every sandbox guest into story -- story events, and no cheats,
-    // noclip or spawn menu for the guest alone. Story is only the fallback for an unreadable mode.
-    const int mode = ue_wrap::game_rules::ReadLocalGameMode();
-    const bool known = mode >= 0 && mode < ue_wrap::game_rules::kGameModeCount;
-    hs.beginPayload.gameMode = static_cast<uint8_t>(known ? mode : 0);
+    hs.beginPayload.gameMode = HostModeByte_(slot);
     hs.beginPayload.sidecarBytes = sidecarBytes;  // the framed identity map leads the stream
-    if (known)
-        UE_LOGI("save_transfer: slot %d -- the joiner loads in the host's mode %d", slot, mode);
-    else
-        UE_LOGW("save_transfer: slot %d -- the host's mode did not read (%d); the joiner loads "
-                "in story", slot, mode);
 }
 
 // One stable-read attempt for a slot still capturing; true once the blob is captured.
@@ -603,6 +611,7 @@ void ClientArm() {
     g_cliHaveBegin = false;
     g_cliChunksSeen = 0;
     g_cliTotal = g_cliChunkCount = g_cliCrc = 0;
+    g_cliGameMode = 0;
     g_cliSidecarBytes = 0;
     g_cliBuf.clear();
     UE_LOGI("save_transfer: client ARMED (menu-mode join -- will request the host save)");
@@ -619,9 +628,21 @@ void ClientNoteConnected() {
 void OnBegin(const coop::net::SaveTransferBeginPayload& p) {
     std::lock_guard<std::mutex> lk(g_cliMu);
     if (!g_cliArmed) return;
+    // An ordinal past the enum is no mode, and the load would write it raw into the GameInstance.
+    // Compatible peers share one enum (the join gate is byte-equality on the version pair), so
+    // this is a corrupt or hostile header, not a mode to substitute for: read before the no-save
+    // branch, since that branch boots a fresh world in the host's mode too.
+    if (!ue_wrap::game_mode::IsValid(p.gameMode)) {
+        UE_LOGE("save_transfer: Begin carries mode %u, which names no game mode -- protocol "
+                "violation, failing", static_cast<unsigned>(p.gameMode));
+        g_cliState = ClientState::Failed;
+        return;
+    }
+    g_cliGameMode = p.gameMode;
     if (p.totalBytes == 0) {
         g_cliState = ClientState::NoSaveAvailable;
-        UE_LOGW("save_transfer: host reports no save available -- falling back to a fresh world");
+        UE_LOGW("save_transfer: host reports no save available -- falling back to a fresh world "
+                "in the host's mode %u", static_cast<unsigned>(p.gameMode));
         return;
     }
     // Begin is once per arm: the flag clears only in ClientArm and the teardown, so a second Begin
@@ -637,11 +658,6 @@ void OnBegin(const coop::net::SaveTransferBeginPayload& p) {
     g_cliTotal = p.totalBytes;
     g_cliChunkCount = p.chunkCount;
     g_cliCrc = p.crc32;
-    // An ordinal past the enum is no mode: the load would write it raw into the GameInstance.
-    if (p.gameMode >= ue_wrap::game_rules::kGameModeCount)
-        UE_LOGW("save_transfer: Begin carries mode %u, not a game mode -- loading in story",
-                static_cast<unsigned>(p.gameMode));
-    g_cliGameMode = p.gameMode < ue_wrap::game_rules::kGameModeCount ? p.gameMode : 0;
     g_cliSidecarBytes = p.sidecarBytes;  // 0 = no sidecar
     if (g_cliState == ClientState::WaitingBegin) g_cliState = ClientState::Receiving;
     // No reserve here: totalBytes is an unvalidated wire u32, and reserving it let a hostile host

@@ -22,6 +22,7 @@
 #include "ui/host_session_settings.h"   // it paints a failed host's reason on itself
 #include "ui/host_window_native.h"      // ...and so does step one
 #include "ui/server_browser_surface.h"  // WHICH browser this session uses
+#include "ue_wrap/world/game_mode.h"
 
 #include <windows.h>
 
@@ -92,6 +93,10 @@ bool BootStorySaveBlocking(bool forceFresh, const wchar_t* slotOverride, int for
     // fresh_boot ini row.
     const bool freshBoot =
         !slotOverride && (forceFresh || cfg::ResolveFlag(coop::config_registry::rows::fresh_boot));
+    // A blank New Game has no slot file, so nothing names its mode but the caller. Un-named, it is
+    // story: the campaign the game itself opens on. A slot boot derives its own and wants -1.
+    const int freshMode =
+        ue_wrap::game_mode::IsValid(forceGameMode) ? forceGameMode : ue_wrap::game_mode::kStory;
     // The save slot: an explicit override, else the VOTVCOOP_SAVE / ini `save` row (the test
     // launcher pins the host's per run), else the default.
     std::wstring slot;
@@ -102,16 +107,21 @@ bool BootStorySaveBlocking(bool forceFresh, const wchar_t* slotOverride, int for
         std::string slotA = cfg::ResolveString(coop::config_registry::rows::save);
         slot.assign(slotA.begin(), slotA.end());  // ASCII slot name
     }
-    UE_LOGI("harness: target %s '%ls'", freshBoot ? "FRESH New Game (blank save)" : "STORY save", slot.c_str());
+    if (freshBoot)
+        UE_LOGI("harness: target FRESH New Game (blank save) in mode %d (%s)", freshMode,
+                ue_wrap::game_mode::NameOrOrdinal(freshMode).c_str());
+    else
+        UE_LOGI("harness: target SAVE slot '%ls' (its name carries its mode)", slot.c_str());
     for (int i = 0; i < 80; ++i) {  // ~120 s cap (boot + omega + level load)
         if (coop::shutdown::IsShuttingDown()) {
             UE_LOGI("harness: BootStorySaveBlocking aborting -- shutdown signaled");
             return false;
         }
         auto st = std::make_shared<std::atomic<int>>(0);  // 0 pending,1 retry,2 ok
-        GT::Post([slot, st, freshBoot, forceGameMode] {
-            const bool inGame = freshBoot ? ue_wrap::engine::StartFreshGame(/*storyMode=*/true)
-                                          : ue_wrap::engine::LoadStorySave(slot.c_str(), forceGameMode);
+        GT::Post([slot, st, freshBoot, forceGameMode, freshMode] {
+            const bool inGame =
+                freshBoot ? ue_wrap::engine::StartFreshGame(freshMode)
+                          : ue_wrap::engine::LoadStorySave(slot.c_str(), forceGameMode);
             st->store(inGame ? 2 : 1);
         });
         // Shutdown-aware, like the host-boot twin in DriveHostBootIfPending: a posted task that
@@ -243,10 +253,12 @@ void DriveMenuModeJoinWorldBoot() {
     if (ST::GetClientState() == ST::ClientState::NoSaveAvailable) {
         // The one legitimate fresh boot: the host HAS no save, said so, and a blank world is the
         // correct answer rather than a substitute for one. (ArmBeginNoSave_ sends this on purpose.)
-        UE_LOGI("harness: the host has no save -- fresh-booting the ephemeral baseline, as asked");
+        const int freshMode = static_cast<int>(ST::ReceivedGameMode());
+        UE_LOGI("harness: the host has no save -- fresh-booting the ephemeral baseline in the "
+                "host's mode %d, as asked", freshMode);
         if (!waitForApplyBlob()) return;
         coop::player_inventory_sync::BeginJoinApply();
-        if (!BootStorySaveBlocking(/*forceFresh=*/true))
+        if (!BootStorySaveBlocking(/*forceFresh=*/true, /*slotOverride=*/nullptr, freshMode))
             FailJoinNoWorld_(coop::net::EndReason::WorldWouldNotLoad,
                              "the engine did not reach gameplay with a fresh world");
         return;

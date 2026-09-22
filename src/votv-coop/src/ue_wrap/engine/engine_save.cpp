@@ -12,6 +12,7 @@
 #include "ue_wrap/core/reflection.h"
 #include "ue_wrap/core/sdk_profile.h"
 #include "ue_wrap/engine/world_identity.h"
+#include "ue_wrap/world/game_mode.h"
 #include "ue_wrap/world/game_rules.h"
 
 #include <cstdint>
@@ -68,7 +69,6 @@ void* g_saveSlotsUiCdo  = nullptr;  // the ui_saveSlots_C CDO; getSavePrefix is 
 int32_t g_saveSlotsUiCdoIdx = -1;   // its GUObjectArray index; a BP CDO can be collected with its class
 void* g_getSavePrefixFn = nullptr;  // ui_saveSlots_C::getSavePrefix(mode) -> FString prefix
 bool  g_gameModeApplied = false;    // the GameMode is derived and written once per campaign
-constexpr uint8_t kEnumGamemodeCount = 8;  // enum_gamemode::enum_MAX
 
 // The ui_saveSlots_C CDO and its getSavePrefix, cached. The widget loads on the first menu or
 // gameplay transition; before that this returns false and the caller retries. getSavePrefix is
@@ -99,15 +99,13 @@ bool ResolveSavePrefixFn() {
 // then runs once. Game thread only.
 void ApplyGameModeFromSlot(void* gi, const wchar_t* slot, int forceGameMode = -1) {
     if (g_gameModeApplied || !gi || !slot) return;
-    // The save-transfer slot carries a prefix the game's mode map cannot match; the wire carried
-    // the host's mode, written directly.
+    // The save-transfer slot carries a prefix the game's mode map cannot match, and a fresh coop
+    // world has no slot file at all; both name their mode outright instead.
     if (forceGameMode >= 0) {
         g_gameModeApplied = true;
-        uint8_t* gm = reinterpret_cast<uint8_t*>(gi) + profile::off::mainGameInstance_GameMode;
-        const uint8_t old = *gm;
-        *gm = static_cast<uint8_t>(forceGameMode);
-        UE_LOGI("engine: ApplyGameModeFromSlot -- slot '%ls' FORCED GameMode=%d (was %u; coop slot)",
-                slot, forceGameMode, static_cast<unsigned>(old));
+        const int old = ue_wrap::game_mode::WriteTo(gi, forceGameMode);
+        UE_LOGI("engine: ApplyGameModeFromSlot -- slot '%ls' FORCED GameMode=%d (was %d; named mode)",
+                slot, forceGameMode, old);
         return;
     }
     if (!ResolveSavePrefixFn()) {
@@ -121,15 +119,14 @@ void ApplyGameModeFromSlot(void* gi, const wchar_t* slot, int forceGameMode = -1
     // The widget is loaded and getSavePrefix is deterministic, so this latches whether or not a
     // prefix matched; a re-run would give the same answer.
     g_gameModeApplied = true;
-    uint8_t* gm = reinterpret_cast<uint8_t*>(gi) + profile::off::mainGameInstance_GameMode;
     if (bestMode >= 0) {
-        const uint8_t old = *gm;
-        *gm = static_cast<uint8_t>(bestMode);
-        UE_LOGI("engine: ApplyGameModeFromSlot -- slot '%ls' prefix-matched GameMode=%d (was %u); "
-                "set @0x01E1 (story-loads-as-sandbox fix)", slot, bestMode, static_cast<unsigned>(old));
+        const int old = ue_wrap::game_mode::WriteTo(gi, bestMode);
+        UE_LOGI("engine: ApplyGameModeFromSlot -- slot '%ls' prefix-matched GameMode=%d (was %d); "
+                "the mode a load outside the slot menu would leave at the engine default",
+                slot, bestMode, old);
     } else {
         UE_LOGW("engine: ApplyGameModeFromSlot -- NO getSavePrefix prefix matched slot '%ls' "
-                "(GameMode stays %u)", slot, static_cast<unsigned>(*gm));
+                "(GameMode stays %d)", slot, ue_wrap::game_mode::ReadFrom(gi));
     }
 }
 
@@ -294,7 +291,7 @@ int DeriveModeFromSlot(const wchar_t* slot) {
     const std::wstring slotStr(slot);
     int    bestMode = -1;
     size_t bestLen  = 0;
-    for (uint8_t mode = 0; mode < kEnumGamemodeCount; ++mode) {
+    for (uint8_t mode = 0; mode < ue_wrap::game_mode::kCount; ++mode) {
         std::wstring pre;
         if (!GetSavePrefix(mode, pre)) continue;
         // The longest matching prefix wins, so one prefix that is a prefix of another (an empty
@@ -414,7 +411,7 @@ void SetSaveObjectReadyHook(SaveObjectReadyHook hook) {
 // than a disk slot. A fresh client has only the level-default props, so the host's connect
 // snapshot mirrors its whole world onto it with nothing to reconcile away. Polled like
 // LoadStorySave. Game thread.
-bool StartFreshGame(bool storyMode) {
+bool StartFreshGame(int gameMode) {
     auto makeFStr = [](std::wstring& b) {
         R::FString fs{};
         fs.Data = b.data();
@@ -481,13 +478,19 @@ bool StartFreshGame(bool storyMode) {
     // A blank save has empty object and trigger arrays, so restoring it yields the level defaults
     // through the same load path as a real save.
     *reinterpret_cast<uint8_t*>(reinterpret_cast<uint8_t*>(gi) + P::off::mainGameInstance_loadObjects) = 1;
-    // The game mode through the prefix logic: a story or sandbox pseudo-slot name.
-    ApplyGameModeFromSlot(gi, storyMode ? L"s_coopFresh" : L"b_coopFresh");
+    // The mode outright: the pseudo-slot has no file and so no name for a prefix to be read from,
+    // and every mode has to be reachable here, not the two a story-or-sandbox flag could spell.
+    int mode = gameMode;
+    if (!ue_wrap::game_mode::IsValid(mode)) {
+        UE_LOGE("engine: StartFreshGame -- %d names no game mode; opening in story", gameMode);
+        mode = ue_wrap::game_mode::kStory;
+    }
+    ApplyGameModeFromSlot(gi, kFreshSlotName, mode);
 
     std::wstring openCmd = L"open ";
     openCmd += P::name::GameplayLevel;
-    UE_LOGI("engine: StartFreshGame -- at preLoad/menu; issuing '%ls' (BLANK save registered, mode=%s)",
-            openCmd.c_str(), storyMode ? "story" : "sandbox");
+    UE_LOGI("engine: StartFreshGame -- at preLoad/menu; issuing '%ls' (BLANK save registered, mode=%d %s)",
+            openCmd.c_str(), mode, ue_wrap::game_mode::NameOrOrdinal(mode).c_str());
     ExecuteConsoleCommand(openCmd.c_str());
     return false;  // not in gameplay yet -> caller keeps retrying
 }

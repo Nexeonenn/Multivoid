@@ -127,7 +127,6 @@ inline constexpr size_t TArray_Data = 0x00;  // TArray<T*> = {T** Data; int32 Nu
 inline constexpr size_t TArray_Num = 0x08;
 inline constexpr size_t TArray_Max = 0x0C;
 inline constexpr size_t mainGameInstance_loadObjects = 0x0229;  // bool: apply the save on BeginPlay (vs fresh)
-inline constexpr size_t mainGameInstance_GameMode = 0x01E1;  // TEnumAsByte<enum_gamemode::Type> (story/sandbox/...; the menu sets it on load from the slot-name prefix, our LoadStorySave must too) -- mainGameInstance.hpp:11
 // The mod's own UMG widget tree (built through SpawnObject):
 inline constexpr size_t UUserWidget_WidgetTree = 0x01D8;       // UWidgetTree*
 inline constexpr size_t UWidgetTree_RootWidget = 0x0028;       // UWidget*

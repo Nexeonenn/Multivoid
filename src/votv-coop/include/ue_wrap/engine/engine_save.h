@@ -26,10 +26,11 @@ bool LoadStorySave(const wchar_t* slot, int forceGameMode = -1);
 // from disk. Game thread.
 void ResetCachedSave();
 
-// A fresh New Game: LoadStorySave with a blank save object (CreateSaveGameObject(saveSlot_C)); a
-// fresh client world holds only level-default props, so the host's snapshot mirrors onto it with
-// nothing to reconcile away. Game thread.
-bool StartFreshGame(bool storyMode);
+// A fresh New Game in `gameMode` (an enum_gamemode ordinal): LoadStorySave with a blank save
+// object (CreateSaveGameObject(saveSlot_C)); a fresh client world holds only level-default props,
+// so the host's snapshot mirrors onto it with nothing to reconcile away. The blank save has no
+// slot file, so the mode is named rather than derived from a prefix. Game thread.
+bool StartFreshGame(int gameMode);
 
 // ---- Save-object-ready hook ----
 // Fires once per LoadStorySave / StartFreshGame, on the game thread, with the USaveGame* about to

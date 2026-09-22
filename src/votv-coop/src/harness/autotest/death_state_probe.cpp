@@ -13,6 +13,7 @@
 #include "ue_wrap/core/sdk_profile.h"
 #include "ue_wrap/core/sdk_profile_names.h"
 #include "ue_wrap/engine/engine.h"
+#include "ue_wrap/world/game_mode.h"
 
 namespace harness::autotest {
 namespace {
@@ -407,8 +408,8 @@ std::wstring CensusRenderState() {
     // game instance's mode is b7, otherwise on a 0.1%-per-day roll behind the badsun achievement.
     if (void* gi = R::FindObjectByClass(P::name::GameInstanceClass)) {
         if (R::IsLive(gi)) {
-            const uint8_t mode = *(reinterpret_cast<uint8_t*>(gi) + P::off::mainGameInstance_GameMode);
-            _snwprintf_s(buf, _TRUNCATE, L" | GameInstance.gamemode=b%u%ls", (unsigned)mode,
+            const int mode = ue_wrap::game_mode::ReadFrom(gi);
+            _snwprintf_s(buf, _TRUNCATE, L" | GameInstance.gamemode=b%d%ls", mode,
                          mode == 7 ? L" (== b7: Bad Sun spawns EVERY new day)" : L"");
             out += buf;
         }

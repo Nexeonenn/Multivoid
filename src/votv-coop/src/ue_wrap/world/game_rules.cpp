@@ -5,6 +5,7 @@
 #include "ue_wrap/core/call.h"
 #include "ue_wrap/core/reflection.h"
 #include "ue_wrap/core/sdk_profile_names.h"
+#include "ue_wrap/world/game_mode.h"  // the mode byte: a GI member, not one of the rules
 
 #include <cstdint>
 #include <cstring>
@@ -15,21 +16,6 @@ namespace {
 
 namespace P = ue_wrap::profile;
 namespace R = ue_wrap::reflection;
-
-// enum_gamemode ordinals -> friendly names. VOTV strips enum display names in the cook, but the
-// ordinal->mode map is EMPIRICALLY verified in the save-picker RE (the getSavePrefix table). 2 and
-// 3 are unused sentinels ("-").
-const char* GameModeName(int ord) {
-    switch (ord) {
-        case 0: return "Story";
-        case 1: return "Infinite";
-        case 4: return "Sandbox";
-        case 5: return "Halloween";
-        case 6: return "Ambience";
-        case 7: return "Solar";
-        default: return nullptr;  // 2/3/unknown -> caller renders "#N"
-    }
-}
 
 // The member name with its blueprint tail cut: "fallDamage_8_AEEA..." -> "fallDamage". The cut is
 // at the first "_<digit>", which is where the tail always starts; a human sub-word such as
@@ -153,14 +139,8 @@ bool ReadLocal(Snapshot& out) {
     void* giClass = R::ClassOf(gi);
     if (!giClass) return false;
 
-    // gamemode (a GI member, NOT inside gameRules).
-    const int32_t gmOff = R::FindPropertyOffset(giClass, L"GameMode");
-    if (gmOff >= 0) {
-        out.gamemode = *(reinterpret_cast<uint8_t*>(gi) + gmOff);
-        const char* nm = GameModeName(out.gamemode);
-        if (nm) out.gamemodeName = nm;
-        else    out.gamemodeName = "#" + std::to_string(out.gamemode);
-    }
+    out.gamemode = ue_wrap::game_mode::ReadFrom(gi);
+    if (out.gamemode >= 0) out.gamemodeName = ue_wrap::game_mode::NameOrOrdinal(out.gamemode);
 
     out.valid = ReadRulesAt(gi, L"gameRules", out.fields, /*withNames=*/true);
 
@@ -211,16 +191,6 @@ int ApplySavedToProcess(void* gameInstance, void* save) {
     // The members are bools, bytes and one float: a plain value copy is the whole assignment.
     std::memcpy(dst, src, static_cast<size_t>(size));
     return changed;
-}
-
-int ReadLocalGameMode() {
-    void* gi = R::FindObjectByClass(P::name::GameInstanceClass);
-    if (!gi) return -1;
-    void* giClass = R::ClassOf(gi);
-    if (!giClass) return -1;
-    const int32_t gmOff = R::FindPropertyOffset(giClass, L"GameMode");
-    if (gmOff < 0) return -1;
-    return *(reinterpret_cast<uint8_t*>(gi) + gmOff);
 }
 
 }  // namespace ue_wrap::game_rules

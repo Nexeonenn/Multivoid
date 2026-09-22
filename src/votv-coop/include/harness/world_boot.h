@@ -13,8 +13,8 @@ namespace harness::world_boot {
 // the menu (a single early open is dropped) and returns true once gameplay is reached; ~1.5 s
 // between opens, blocking this worker until loaded or the ~120 s cap. `forceFresh` forces the
 // blank New Game path (the menu-mode join's fallback); `slotOverride` loads that slot (the
-// downloaded coop slot), with `forceGameMode` carrying the host's mode, since the zcoop_ prefix
-// matches none.
+// downloaded coop slot). `forceGameMode` carries the host's mode on both paths: the zcoop_ prefix
+// matches no mode, and the blank New Game has no slot file to carry one at all.
 bool BootStorySaveBlocking(bool forceFresh = false, const wchar_t* slotOverride = nullptr,
                            int forceGameMode = -1);
 

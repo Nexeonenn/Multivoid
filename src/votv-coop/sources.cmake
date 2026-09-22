@@ -119,6 +119,7 @@ set(VOTVCOOP_SOURCES
     src/ue_wrap/world/store_catalog.cpp
     src/ue_wrap/actors/prop.cpp
     src/ue_wrap/actors/vitals.cpp
+    src/ue_wrap/world/game_mode.cpp
     src/ue_wrap/world/game_rules.cpp
     src/ue_wrap/world/game_rules_pane.cpp
     src/ue_wrap/engine/spawn_menu.cpp

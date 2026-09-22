@@ -8,6 +8,7 @@
 #include "ue_wrap/engine/gvas_meta.h"     // worker-thread .sav metadata reads (no LoadGameFromSlot)
 #include "ue_wrap/core/log.h"
 #include "ue_wrap/core/reflection.h"
+#include "ue_wrap/world/game_mode.h"
 
 #include <algorithm>
 #include <atomic>
@@ -43,18 +44,6 @@ R::FString MakeFStr(std::wstring& buf) {
     fs.Num  = static_cast<int32_t>(buf.size()) + 1;  // counts the null
     fs.Max  = fs.Num;
     return fs;
-}
-
-const wchar_t* ModeLabel(int mode) {
-    switch (mode) {
-        case 0: return L"Story";
-        case 1: return L"Infinite";
-        case 4: return L"Sandbox";
-        case 5: return L"Halloween";
-        case 6: return L"Ambience";
-        case 7: return L"Solar";
-        default: return L"";
-    }
 }
 
 // ---- GameplayStatics save UFunctions (CreateSaveGameObject / SaveGameToSlot /
@@ -255,7 +244,8 @@ bool BuildScanList(std::vector<ScanItem>& items, SlotCdoDefaults& def) {
         item.path = it->path().wstring();
         item.base.slot = slot;
         item.base.mode = engine::DeriveModeFromSlot(slot.c_str());
-        item.base.modeLabel = ModeLabel(item.base.mode);
+        const wchar_t* label = ue_wrap::game_mode::Name(item.base.mode);
+        item.base.modeLabel = label ? label : L"";
         std::wstring prefix;  // displayName = slot minus the mode prefix (cosmetic)
         if (item.base.mode >= 0 &&
             engine::GetSavePrefix(static_cast<uint8_t>(item.base.mode), prefix) &&
