@@ -1,4 +1,4 @@
-﻿// coop/props/pack_trash_intent.cpp -- see coop/props/pack_trash_intent.h.
+// coop/props/pack_trash_intent.cpp -- see coop/props/pack_trash_intent.h.
 
 #include "coop/props/pack_trash_intent.h"
 
