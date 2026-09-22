@@ -198,11 +198,17 @@ void Install(coop::net::Session* session) {
     g_session.store(session, std::memory_order_release);
     if (session && session->connected()) sg::SetEnabled(true);  // each lane asserts its own enable
     if (!GT::IsGameThread()) return;
+    // Throttle the class walks while a class is unresolved, the shape prop_spawn_authoring and
+    // prop_drop_intent use: this Install is the per-tick retry pump, a FindClass MISS is not cached
+    // (a class can load later), and a walk renders a name per object, so an unresolved class would
+    // cost one full object-array walk per frame for as long as the world goes without one.
+    static int s_retry = 0;
+    if (s_retry > 0) { --s_retry; return; }
     for (size_t i = 0; i < std::size(kWatched); ++i) {
         if (g_installed[i]) continue;
         const Watched& w = kWatched[i];
         void* cls = R::FindClass(w.cls);
-        if (!cls) continue;  // not loaded yet -- retry next tick
+        if (!cls) { s_retry = 60; continue; }  // not loaded yet -- a second of frames from now
         void* fn = R::FindFunction(cls, L"upd");
         if (!fn) {
             UE_LOGW("prop_record_refresh: %ls::upd UFunction not found -- its record will only "
