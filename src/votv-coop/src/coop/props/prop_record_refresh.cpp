@@ -76,7 +76,9 @@ void RefreshLook(void* box, bool opened) {
     void* cls = R::ClassOf(box);
     if (!cls) return;
     if (g_nameOff < 0) g_nameOff = R::FindPropertyOffset(cls, L"name");
-    if (!g_initFn)     g_initFn  = R::FindFunction(cls, L"init");
+    // The memoised lookup: FindFunction has no cache, so a box whose init never resolved would walk
+    // the object array again on every record that lands on it.
+    if (!g_initFn)     g_initFn  = R::FindDispatchFunctionCached(cls, L"init");
     if (g_nameOff < 0 || !g_initFn) {
         static bool s_warned = false;
         if (!s_warned) { s_warned = true;
@@ -133,7 +135,11 @@ constexpr Watched kWatched[] = {
     { L"prop_box_C",     0x44424F58, true,  &DescribeBox },       // 'DBOX'
     { L"prop_reelbox_C", 0x5242584F, false, &DescribeReelCase },  // 'RBXO'
 };
-bool g_installed[std::size(kWatched)] = {};  // game thread only
+// The UFunction each watch was armed on, so a re-armed one can be recognised. A world reload
+// destroys and re-creates these classes and their functions: at a new address the old watch simply
+// never fires again, and at a recycled one it would fire for whatever now lives there. An exact
+// watch has to be re-validated; the neighbouring lanes use name watches, which resolve themselves.
+void* g_watchedFn[std::size(kWatched)] = {};  // game thread only
 
 const Watched* ByTag(int tag) {
     for (const Watched& w : kWatched)
@@ -173,6 +179,11 @@ void OnUpdPost(const sg::Call& call) {
     const auto now = Clock::now();
     auto it = g_lastPublish.find(actor);
     if (it != g_lastPublish.end() && now - it->second < kCoalesce) { ++g_cCoalesced; return; }
+    // Evict what the window has passed. The map is keyed on the actor's address, so without this it
+    // both grows for the life of the session and can hold a dead box's entry against a new one the
+    // allocator puts at the same address -- which would swallow that box's first publish.
+    for (auto e = g_lastPublish.begin(); e != g_lastPublish.end();)
+        e = (now - e->second >= kCoalesce) ? g_lastPublish.erase(e) : std::next(e);
 
     const std::wstring key = ue_wrap::prop::GetInteractableKeyString(actor);
     if (key.empty() || key == L"None") {
@@ -201,32 +212,51 @@ void Install(coop::net::Session* session) {
     // Throttle the class walks while a class is unresolved, the shape prop_spawn_authoring and
     // prop_drop_intent use: this Install is the per-tick retry pump, a FindClass MISS is not cached
     // (a class can load later), and a walk renders a name per object, so an unresolved class would
-    // cost one full object-array walk per frame for as long as the world goes without one.
+    // cost one full object-array walk per frame for as long as the world goes without one. A class
+    // that IS resolved costs a memoised lookup, so the pass below still runs every frame for it and
+    // re-arms the watch when a world load hands back a new function.
     static int s_retry = 0;
     if (s_retry > 0) { --s_retry; return; }
     for (size_t i = 0; i < std::size(kWatched); ++i) {
-        if (g_installed[i]) continue;
         const Watched& w = kWatched[i];
         void* cls = R::FindClass(w.cls);
         if (!cls) { s_retry = 60; continue; }  // not loaded yet -- a second of frames from now
-        void* fn = R::FindFunction(cls, L"upd");
+        // The memoised lookup holds its answer by slot and serial, so a class re-created by a world
+        // load answers with the NEW function and the comparison below re-arms on it.
+        void* fn = R::FindDispatchFunctionCached(cls, L"upd");
+        if (fn && fn == g_watchedFn[i]) continue;  // armed, on the function that is here now
         if (!fn) {
-            UE_LOGW("prop_record_refresh: %ls::upd UFunction not found -- its record will only "
-                    "travel on its birth paths (an in-place change stays local)", w.cls);
-            g_installed[i] = true;  // stop the retry
+            static bool s_saidMissing[std::size(kWatched)] = {};
+            if (!s_saidMissing[i]) {
+                s_saidMissing[i] = true;
+                UE_LOGW("prop_record_refresh: %ls::upd UFunction not found -- its record will only "
+                        "travel on its birth paths (an in-place change stays local)", w.cls);
+            }
+            s_retry = 60;
             continue;
         }
         // The script gate, not a ProcessEvent observer: the prop calls its own upd() from inside
         // its Blueprint, a route that never reaches ProcessEvent, and an observer there saw
         // nothing. The watch is on the exact UFunction rather than on the name `upd`, which half
         // the props in the game declare.
+        if (g_watchedFn[i] && g_watchedFn[i] != fn)
+            sg::Unwatch(g_watchedFn[i], w.tag, nullptr, &OnUpdPost);  // the world that owned it is gone
         if (!sg::Watch(fn, w.tag, nullptr, &OnUpdPost)) {
-            UE_LOGW("prop_record_refresh: script-gate watch on %ls::upd refused -- retrying", w.cls);
+            // Back off with the same sixty frames the unresolved-class branch takes, and say so
+            // once: a refusal persists (the gate did not install, or its table is full), so an
+            // unthrottled retry would warn and re-resolve every frame for the life of the process.
+            s_retry = 60;
+            static bool s_saidRefused = false;
+            if (!s_saidRefused) {
+                s_saidRefused = true;
+                UE_LOGW("prop_record_refresh: script-gate watch on %ls::upd refused -- retrying", w.cls);
+            }
             continue;
         }
-        g_installed[i] = true;
-        UE_LOGI("prop_record_refresh: watching %ls::upd -- it republishes its own save record on "
-                "every in-place change", w.cls);
+        const bool rearm = g_watchedFn[i] != nullptr;
+        g_watchedFn[i] = fn;
+        UE_LOGI("prop_record_refresh: %hs %ls::upd -- it republishes its own save record on "
+                "every in-place change", rearm ? "re-armed on" : "watching", w.cls);
     }
 }
 

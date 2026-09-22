@@ -106,7 +106,13 @@ void RepointContainer(void* drone);
 // press, not a tick. Game thread.
 int32_t LiveGarageConsoles(void** out, int32_t cap);
 
-// True iff `obj` is a droneConsole_C (or a descendant). Cached class, game thread.
+// The console's class, for a consumer gating a hot callback: produce it in an installer, on a
+// throttle, and COMPARE in the callback. Null until the class loads, and a FindClass miss is not
+// memoised. Game thread.
+void* ConsoleClassPtr();
+
+// True iff `obj` is a droneConsole_C (or a descendant). For a once-per-press call site, not for a
+// shared verb's every dispatch. Cached class, game thread.
 bool IsGarageConsole(void* obj);
 
 // The console's lid: the keyboard is only pressable while it is open, which is the console's own

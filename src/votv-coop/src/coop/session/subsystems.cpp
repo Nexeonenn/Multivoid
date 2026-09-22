@@ -660,10 +660,10 @@ void TickGameplay(coop::net::Session& session, bool isConnected, bool isHost,
       coop::trash_sweep::Tick(session, coop::players::Registry::Get().Local());  // open the clumps a broom stroke made or pushed + publish their roll (AFTER TickCarry so the latch is current; reads the local hand live)
       coop::puppet_carry_drive::Tick(session); }  // drive each puppet-held clump to its hand + publish the host-auth carry/flight pose batch (AFTER TickCarry so the latch is current)
     if (isHost) { PP::Scope _s{PP::Bucket::Interactable}; coop::broom_stroke::Tick(session); }  // HOST: run the clients' queued broom strokes, one a tick a client (last: what a stroke spawns, sweeps and pushes is picked up next tick, as for the host's own)
-    { PP::Scope _s{PP::Bucket::Interactable}; coop::pack_trash_intent::Tick(session); }  // client: spend the tools its presses sent; HOST: run one queued pack a tick a client
-    { PP::Scope _s{PP::Bucket::Interactable}; coop::drone_call_intent::Tick(session); }  // HOST: run one queued drone-console press a tick a client
+    { PP::Scope _s{PP::Bucket::Interactable}; ue_wrap::ScopedWalkTimer _w{"sync:pack_trash"}; coop::pack_trash_intent::Tick(session); }  // client: spend the tools its presses sent; HOST: run one queued pack a tick a client
+    { PP::Scope _s{PP::Bucket::Interactable}; ue_wrap::ScopedWalkTimer _w{"sync:drone_call"}; coop::drone_call_intent::Tick(session); }  // HOST: run one queued drone-console press a tick a client
     { PP::Scope _s{PP::Bucket::Balance};       coop::balance_sync::Tick(); }  // host polls saveSlot.Points + broadcasts on change; client retries the pending mirror apply
-    { PP::Scope _s{PP::Bucket::Balance};       coop::upgrade_sync::Tick(session); }  // host polls the upgrade struct + broadcasts on change, and runs one queued purchase a tick a client; client retries the pending mirror
+    { PP::Scope _s{PP::Bucket::Balance};       ue_wrap::ScopedWalkTimer _w{"sync:upgrades"}; coop::upgrade_sync::Tick(session); }  // host polls the upgrade struct + broadcasts on change, and runs one queued purchase a tick a client; client retries the pending mirror
     coop::dev::drone_probe::Install();  // dev-only delivery-drone RE probe (ini drone_probe=1; self-latches + retries until the BP class loads)
     coop::dev::drone_probe::Tick(isConnected, isHost);
     coop::dev::store_table_probe::Tick();  // ini store_table_probe=1; ONE-SHOT: which mechanism can read a list_store row

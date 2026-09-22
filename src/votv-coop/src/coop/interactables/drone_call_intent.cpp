@@ -51,6 +51,11 @@ constexpr uint64_t kRefusalSayMs   = 10000;
 std::atomic<coop::net::Session*> g_session{nullptr};
 bool g_watchInstalled = false;
 bool g_watchLive = false;
+// The console's class, produced by Install under its throttle and only COMPARED in the callback:
+// actionOptionIndex is the E-press verb of every interactable in the game, and a FindClass miss is
+// not memoised, so resolving it here would cost a full object-array walk per press in any world
+// that holds no console.
+void* g_consoleCls = nullptr;
 
 uint64_t g_sent = 0, g_flown = 0, g_denied = 0;
 
@@ -124,7 +129,8 @@ void Execute(coop::net::Session& s, const coop::net::DroneFlyIntentPayload& p, u
 sg::Verdict OnActionPre(const sg::Call& call) {
     auto* s = g_session.load(std::memory_order_acquire);
     if (!s || !s->connected() || s->role() != coop::net::Role::Client) return sg::Verdict::Run;
-    if (!D::IsGarageConsole(call.object)) return sg::Verdict::Run;
+    if (!call.object || !g_consoleCls || R::ClassOf(call.object) != g_consoleCls)
+        return sg::Verdict::Run;
 
     static void*   sFn = nullptr;
     static int32_t sActionOff = -1;
@@ -157,6 +163,11 @@ void Install(coop::net::Session* session) {
     g_session.store(session, std::memory_order_release);
     if (!g_watchInstalled)
         g_watchInstalled = sg::WatchName(kActionVerb, kTagDroneCall, &OnActionPre, nullptr);
+    // Install is the per-tick retry pump, so the resolve of a class the world may not hold is bound
+    // to about 1 Hz -- the coin gun's shape, for the coin gun's reason.
+    if (g_consoleCls) return;
+    static uint32_t sResolveN = 0;
+    if ((sResolveN++ % 125u) == 0u) g_consoleCls = D::ConsoleClassPtr();
 }
 
 void Tick(coop::net::Session& session) {
