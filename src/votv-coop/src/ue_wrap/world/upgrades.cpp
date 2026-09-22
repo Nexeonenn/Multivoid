@@ -184,18 +184,31 @@ int32_t MaxLevel(int panelIndex) {
     return row < 0 ? 0 : kRows[row].maxLevel;
 }
 
+bool ApplyUpgradedHook() {
+    void* gm = ue_wrap::economy::GamemodePtr();
+    if (!gm) return false;
+    void* fn = R::FindDispatchFunctionCached(R::ClassOf(gm), L"upgraded");
+    if (!fn) return false;
+    ParamFrame f(fn);
+    return f.valid() && Call(gm, f);
+}
+
 int RefreshOpenRows() {
     void* cls = R::FindClass(kRowClass);
     if (!cls) return 0;
-    void* fn = R::FindFunction(cls, kRowRefresh);
+    // The memoised lookup, not FindFunction: that one has no cache of any kind, so a plain call
+    // here would walk the whole object array on every purchase and on every mirror the client
+    // applies. This one holds the answer by slot and serial, and holds a miss as a miss.
+    void* fn = R::FindDispatchFunctionCached(cls, kRowRefresh);
     if (!fn) return 0;
     struct Ctx { void* fn; int n; } ctx{ fn, 0 };
     OI::ForEachInstance(cls, [](void* c, void* obj, int32_t) {
         auto* x = static_cast<Ctx*>(c);
         if (!obj) return;
-        // The class default object has no children to repaint and its upd() would read them.
-        const std::wstring name = R::ToString(R::NameOf(obj));
-        if (name.rfind(L"Default__", 0) == 0) return;
+        // The class default object has no children to repaint and its upd() would read them. The
+        // prefix test reads the name in place; rendering it to a string would allocate per row, and
+        // the panel carries fifty.
+        if (R::NameStartsWith(R::NameOf(obj), L"Default__")) return;
         ue_wrap::ParamFrame f(x->fn);
         if (!f.valid()) return;
         if (ue_wrap::Call(obj, f)) ++x->n;

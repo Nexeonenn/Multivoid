@@ -9,6 +9,7 @@
 #include "ue_wrap/core/log.h"
 #include "ue_wrap/core/reflection.h"
 #include "ue_wrap/core/script_gate.h"
+#include "ue_wrap/engine/world_identity.h"
 #include "ue_wrap/world/economy.h"
 #include "ue_wrap/world/upgrades.h"
 
@@ -57,7 +58,8 @@ bool    g_havePublished = false;
 // The client's latest unapplied mirror. Held until the store resolves, so a join-edge mirror that
 // lands under the load screen is not lost.
 coop::net::UpgradeLevelsPayload g_pendingApply{};
-bool g_havePendingApply = false;
+bool     g_havePendingApply = false;
+uint32_t g_pendingGen = 0;  // the world the pending mirror was received in
 
 uint64_t g_sent = 0, g_bought = 0, g_sold = 0, g_denied = 0, g_broadcast = 0, g_applied = 0;
 
@@ -167,8 +169,10 @@ void Execute(coop::net::Session& s, const coop::net::UpgradeIntentPayload& p, ui
             return;
         }
         if (!UP::WriteLevel(index, level + 1)) {
-            // Charged and not delivered: put it back rather than leave the group short.
-            ue_wrap::economy::AddPoints(price);
+            // Charged and not delivered: put it back rather than leave the group short. Written,
+            // not added: the game's own credit path books a positive amount as EARNINGS in the
+            // save's lifetime stats, and undoing our own charge is not income.
+            ue_wrap::economy::WritePoints(points);
             ++g_denied;
             UE_LOGW("upgrade_sync: slot=%u buy index=%d -- the level write failed, charge refunded",
                     static_cast<unsigned>(slot), index);
@@ -202,24 +206,39 @@ void Execute(coop::net::Session& s, const coop::net::UpgradeIntentPayload& p, ui
                 static_cast<unsigned>(slot), index, level, level - 1, refund);
     }
 
+    // The button's own second half: the panel repaint, then the gamemode's re-derive. Without the
+    // second one the level is written and nothing in the world reads it until some later purchase
+    // or a load runs the hook.
     UP::RefreshOpenRows();  // the host's own panel, if it is up
+    UP::ApplyUpgradedHook();
     Publish(s, "a purchase");
 }
 
 // ---- the client's gate -----------------------------------------------------------------------
 
-// The row's `index`, read off the pressed widget.
-bool RowIndexOf(void* widget, int* out) {
+// The row's `index` and whether it is a MODULE row, both read off the pressed widget.
+//
+// The index alone does not identify a row: the panel really does carry two widgets numbered 27 --
+// the ping-strength level and the 400-credit RC module -- and the module rows are what the level
+// table has no entry for. Without the flag, a press on the module was cancelled as a level buy and
+// re-sent as index 27, so the presser lost the module it paid for and the group bought a
+// ping-strength level for a tenth of the price. `module` is the widget's own discriminator.
+bool RowOf(void* widget, int* outIndex, bool* outModule) {
     static void*   sCls = nullptr;
-    static int32_t sOff = -1;
+    static int32_t sIdxOff = -1;
+    static int32_t sModByte = -1;
+    static uint8_t sModMask = 0;
     void* cls = R::ClassOf(widget);
     if (!cls) return false;
     if (cls != sCls) {
         sCls = cls;
-        sOff = R::FindPropertyOffset(cls, L"index");
+        sIdxOff = R::FindPropertyOffset(cls, L"index");
+        if (!R::FindBoolProperty(cls, L"module", sModByte, sModMask)) sModByte = -1;
     }
-    if (sOff < 0) return false;
-    *out = *reinterpret_cast<int32_t*>(reinterpret_cast<uint8_t*>(widget) + sOff);
+    if (sIdxOff < 0 || sModByte < 0) return false;  // an unreadable row is not pressed for us
+    const uint8_t* base = reinterpret_cast<const uint8_t*>(widget);
+    *outIndex = *reinterpret_cast<const int32_t*>(base + sIdxOff);
+    *outModule = (*(base + sModByte) & sModMask) != 0;
     return true;
 }
 
@@ -229,11 +248,13 @@ sg::Verdict OnButton(const sg::Call& call, uint8_t dir) {
     if (!call.object) return sg::Verdict::Run;
 
     int index = -1;
-    if (!RowIndexOf(call.object, &index)) return sg::Verdict::Run;
+    bool isModule = false;
+    if (!RowOf(call.object, &index, &isModule)) return sg::Verdict::Run;
     // A module row buys a one-shot unlock in a store this lane does not carry. Cancelling it would
     // take the client's own unlock away and give it nothing, so it keeps running locally, exactly
-    // as it did before this lane existed.
-    if (!UP::IsLevelRow(index)) return sg::Verdict::Run;
+    // as it did before this lane existed. The flag is tested BEFORE the index, because an index is
+    // not unique across the two kinds of row.
+    if (isModule || !UP::IsLevelRow(index)) return sg::Verdict::Run;
 
     coop::net::UpgradeIntentPayload p{};
     p.panelIndex = static_cast<uint8_t>(index);
@@ -270,12 +291,30 @@ void Tick(coop::net::Session& session) {
         g_saidLive = true;
         UE_LOGI("upgrade_sync: the panel's buy and sell gates are live");
     }
+    // And a gate that never goes live says so ONCE, because its silence is indistinguishable from
+    // working: a client's purchase would run locally, debit that client and be stomped by the next
+    // mirror, with nothing in either log to read.
+    if (!g_saidLive && session.role() == coop::net::Role::Client) {
+        static int s_ticksUnlive = 0;
+        if (++s_ticksUnlive == 600)
+            UE_LOGW("upgrade_sync: the panel's buy gate is still not live after ten seconds -- a "
+                    "purchase made here will run locally and be overwritten");
+    }
 
     if (session.role() == coop::net::Role::Client) {
+        // A mirror belongs to the world it was sent for. A world change between its arrival and its
+        // apply would write the previous world's numbers into this one, so it is dropped at the
+        // seam instead; the host re-sends the levels at every world-ready.
+        const uint32_t gen = ue_wrap::world_identity::Generation();
+        if (g_havePendingApply && gen != g_pendingGen) {
+            g_havePendingApply = false;
+            UE_LOGI("upgrade_sync: a mirror from the previous world dropped at the world change");
+        }
         if (g_havePendingApply) {
             if (UP::WriteLevels(g_pendingApply.level)) {
                 g_havePendingApply = false;
                 ++g_applied;
+                UP::ApplyUpgradedHook();  // the numbers are nothing until the world re-derives from them
                 const int rows = UP::RefreshOpenRows();
                 UE_LOGI("upgrade_sync: applied host levels (#%llu, %d open row(s) repainted)",
                         static_cast<unsigned long long>(g_applied), rows);
@@ -308,6 +347,7 @@ void ApplyFromHost(const coop::net::UpgradeLevelsPayload& payload) {
     if (s && s->role() == coop::net::Role::Host) return;  // authoritative
     g_pendingApply = payload;
     g_havePendingApply = true;
+    g_pendingGen = ue_wrap::world_identity::Generation();  // the world it was sent for
 }
 
 void OnUpgradeIntent(coop::net::Session& session, const coop::net::UpgradeIntentPayload& payload,

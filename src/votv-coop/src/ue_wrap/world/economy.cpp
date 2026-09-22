@@ -46,6 +46,8 @@ void* ResolveSaveSlotAndPoints(int32_t* outOff) {
 
 }  // namespace
 
+void* GamemodePtr() { return ResolveGamemode(); }
+
 void* SaveSlotPtr() {  // the shared gamemode->saveSlot resolve, ptr only
     void* gm = ResolveGamemode();
     if (!gm) return nullptr;

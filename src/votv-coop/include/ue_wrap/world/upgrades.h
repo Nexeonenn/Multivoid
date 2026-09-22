@@ -48,6 +48,14 @@ int32_t BasePrice(int panelIndex);
 int32_t RefundAtLevel(int panelIndex, int32_t level);
 int32_t MaxLevel(int panelIndex);
 
+// The gamemode's own apply hook, the second half of what the panel's button does: the button ends
+// `upd(); gamemode->upgraded();`, and that second call is what re-derives the world from the new
+// numbers -- the global sensorLevel material parameter, the object renderer's target, and every
+// actor implementing int_upgrade_C, each told through upgraded_pcUpgrades. A level written without
+// it is paid for and inert until something else runs it. It walks the actor list, so it belongs on
+// a real change, never on a poll. False if the gamemode or the verb did not resolve. Game thread.
+bool ApplyUpgradedHook();
+
 // Re-run each open panel row's own upd(), so a level written from outside the UI shows on a
 // panel that is already up. Cheap and safe when none is open: it walks live widgets only.
 // Returns how many rows were refreshed. Game thread.
